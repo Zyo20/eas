@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "ts-node --transpile-only -r tsconfig-paths/register src/main.ts",
+    "prebuild": "prisma generate",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
