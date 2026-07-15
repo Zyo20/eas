@@ -180,6 +180,19 @@ export default function AttendeesPage() {
     URL.revokeObjectURL(url);
   }
 
+  function downloadSampleCsv() {
+    const csvContent = 'identifier,fullName,email\r\nATT-001,John Doe,john.doe@example.com\r\nATT-002,Jane Smith,jane.smith@example.com';
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'attendees_bulk_import_sample.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   // ── Guards ─────────────────────────────────────────────────────────────────
 
   if (err) return <main style={{ padding: 24, color: '#dc2626' }}>{err}</main>;
@@ -415,9 +428,27 @@ export default function AttendeesPage() {
         </form>
 
         {/* CSV import */}
-        <div style={{ marginBottom: 16, padding: 12, background: '#f1f5f9', borderRadius: 8, fontSize: 13 }}>
-          <strong>Bulk import:</strong> upload a CSV with columns <code>identifier, fullName, email</code>.
-          <input type="file" accept=".csv" onChange={onImport} style={{ marginLeft: 12 }} />
+        <div style={{ marginBottom: 16, padding: 12, background: '#f1f5f9', borderRadius: 8, fontSize: 13, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <strong>Bulk import:</strong> upload a CSV with columns <code>identifier, fullName, email</code>.
+          </div>
+          <button
+            type="button"
+            onClick={downloadSampleCsv}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#0f766e',
+              textDecoration: 'underline',
+              cursor: 'pointer',
+              fontWeight: 600,
+              padding: 0,
+              fontSize: 13,
+            }}
+          >
+            Download Sample CSV
+          </button>
+          <input type="file" accept=".csv" onChange={onImport} />
         </div>
 
         {/* Toolbar: filter + bulk action */}
