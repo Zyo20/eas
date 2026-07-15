@@ -3,6 +3,7 @@
 import { useEffect, useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, type Attendee } from '@/lib/api';
+import MapPicker from '@/components/MapPicker';
 
 export default function NewEventPage() {
   const router = useRouter();
@@ -104,10 +105,10 @@ export default function NewEventPage() {
           <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} style={{ ...inp, minHeight: 60 }} />
         </Field>
         <Field label="Geofence (optional — leave blank for no geofence check)">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px', gap: 8, marginBottom: 12 }}>
             <input
               type="number"
-              step="0.000001"
+              step="0.0000000001"
               min={-90}
               max={90}
               placeholder="Latitude"
@@ -117,7 +118,7 @@ export default function NewEventPage() {
             />
             <input
               type="number"
-              step="0.000001"
+              step="0.0000000001"
               min={-180}
               max={180}
               placeholder="Longitude"
@@ -137,7 +138,19 @@ export default function NewEventPage() {
               style={inp}
             />
           </div>
-          <p style={{ ...sm, marginTop: 4 }}>Scans outside this radius will be flagged but not rejected.</p>
+
+          <MapPicker
+            lat={form.locationLat.trim() === '' ? null : Number(form.locationLat)}
+            lng={form.locationLng.trim() === '' ? null : Number(form.locationLng)}
+            radius={Number(form.geofenceRadiusM) || 50}
+            onChange={(latVal, lngVal) => setForm((prev) => ({
+              ...prev,
+              locationLat: latVal.toString(),
+              locationLng: lngVal.toString(),
+            }))}
+          />
+
+          <p style={{ ...sm, marginTop: 8 }}>Scans outside this radius will be flagged but not rejected.</p>
         </Field>
         <Field label={`Roster (${picked.size} of ${attendees.length})`}>
           <input

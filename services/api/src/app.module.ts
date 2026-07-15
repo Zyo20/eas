@@ -10,6 +10,7 @@ import { AttendanceModule } from './attendance/attendance.module';
 import { QrModule } from './qr/qr.module';
 import { PublicCheckinModule } from './public-checkin/public-checkin.module';
 import { MeModule } from './me/me.module';
+import { MailModule } from './mail/mail.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { MeModule } from './me/me.module';
     QrModule,
     PublicCheckinModule,
     MeModule,
+    MailModule,
   ],
 })
 export class AppModule {}

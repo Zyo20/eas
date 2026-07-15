@@ -5,6 +5,22 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api, getToken, setToken, type Event } from '@/lib/api';
 
+const getScannerUrl = (eventId: string) => {
+  const envUrl = process.env.NEXT_PUBLIC_SCANNER_URL;
+  if (envUrl) {
+    return `${envUrl}/scan/${eventId}`;
+  }
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    const isLocalIp = hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.') || hostname.endsWith('.local');
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || isLocalIp) {
+      // Use the same hostname but with the scanner dev port (5173)
+      return `http://${hostname}:5173/scan/${eventId}`;
+    }
+  }
+  return `https://scanner.eas.arrowtest.site/scan/${eventId}`;
+};
+
 export default function DashboardPage() {
   const router = useRouter();
   const [events, setEvents] = useState<Event[] | null>(null);
@@ -89,7 +105,7 @@ export default function DashboardPage() {
                 <td style={td}>{ev.location ?? '—'}</td>
                 <td style={td}>
                   <a
-                    href={`https://scanner.eas.arrowtest.site/scan/${ev.id}`}
+                    href={getScannerUrl(ev.id)}
                     target="_blank"
                     rel="noreferrer"
                     style={{ fontSize: 13, color: '#1d4ed8', textDecoration: 'none' }}

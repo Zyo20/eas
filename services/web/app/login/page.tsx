@@ -1,12 +1,14 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useState, useEffect, FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { api, setToken, getToken, type AuthUser } from '@/lib/api';
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
-  const [email, setEmail] = useState('');
+  const searchParams = useSearchParams();
+  const [email, setEmail] = useState(searchParams.get('email') ?? '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,7 +35,6 @@ export default function LoginPage() {
       const { token, user } = await api.post<{ token: string; user: AuthUser }>('/auth/login', { email, password });
       setToken(token);
       // Role-aware redirect. Admins go to the dashboard; attendees go to their self-service portal.
-      // /me works for both roles (returns AuthedUser), so the redirect is purely a UX hint.
       const dest = user.role === 'attendee' ? '/me' : '/dashboard';
       router.push(dest);
     } catch (err) {
@@ -44,50 +45,58 @@ export default function LoginPage() {
   }
 
   return (
+    <form onSubmit={onSubmit} style={{ width: '100%', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <h1 style={{ margin: 0, fontSize: 22 }}>EAS</h1>
+      <p style={{ margin: 0, color: '#64748b', fontSize: 13 }}>Sign in to check in attendees or view your events.</p>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, color: '#475569' }}>
+        Email
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          autoComplete="username"
+          style={inputStyle}
+        />
+      </label>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, color: '#475569' }}>
+        Password
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          autoComplete="current-password"
+          style={inputStyle}
+        />
+      </label>
+      {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
+      <button
+        type="submit"
+        disabled={busy}
+        style={{
+          padding: '10px 16px',
+          borderRadius: 6,
+          border: 'none',
+          background: busy ? '#94a3b8' : '#1e293b',
+          color: 'white',
+          fontWeight: 600,
+          fontSize: 14,
+          cursor: busy ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {busy ? 'Signing in…' : 'Sign in'}
+      </button>
+    </form>
+  );
+}
+
+export default function LoginPage() {
+  return (
     <main style={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', padding: 24 }}>
-      <form onSubmit={onSubmit} style={{ width: '100%', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <h1 style={{ margin: 0, fontSize: 22 }}>EAS</h1>
-        <p style={{ margin: 0, color: '#64748b', fontSize: 13 }}>Sign in to check in attendees or view your events.</p>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, color: '#475569' }}>
-          Email
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoComplete="username"
-            style={inputStyle}
-          />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, color: '#475569' }}>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoComplete="current-password"
-            style={inputStyle}
-          />
-        </label>
-        {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
-        <button
-          type="submit"
-          disabled={busy}
-          style={{
-            padding: '10px 16px',
-            borderRadius: 6,
-            border: 'none',
-            background: busy ? '#94a3b8' : '#1e293b',
-            color: 'white',
-            fontWeight: 600,
-            fontSize: 14,
-            cursor: busy ? 'not-allowed' : 'pointer',
-          }}
-        >
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
+      <Suspense fallback={<p style={{ color: '#64748b', fontSize: 13 }}>Loading…</p>}>
+        <LoginForm />
+      </Suspense>
     </main>
   );
 }

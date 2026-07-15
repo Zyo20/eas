@@ -120,3 +120,79 @@ export const ManualCheckInRequestSchema = z.object({
   note: z.string().max(500).optional().nullable(),
 });
 export type ManualCheckInRequest = z.infer<typeof ManualCheckInRequestSchema>;
+
+// ---- v1.1.1: Setup-link account creation ----
+
+/** Response from POST /attendees/:id/create-account and POST /attendees/:id/reset-account */
+export const CreateAccountResponseSchema = z.object({
+  attendeeId: z.string().uuid(),
+  userId: z.string().uuid(),
+  email: z.string().email(),
+  setupUrl: z.string().url(),
+});
+export type CreateAccountResponse = z.infer<typeof CreateAccountResponseSchema>;
+
+/** GET /auth/setup-info?token=... (peek without consuming) */
+export const SetupInfoResponseSchema = z.object({
+  email: z.string().email(),
+  name: z.string(),
+});
+export type SetupInfoResponse = z.infer<typeof SetupInfoResponseSchema>;
+
+/** POST /auth/setup-account */
+export const SetupAccountRequestSchema = z.object({
+  token: z.string().min(10),
+  newPassword: z.string().min(8).max(128),
+});
+export type SetupAccountRequest = z.infer<typeof SetupAccountRequestSchema>;
+
+/** Response from POST /auth/setup-account */
+export const SetupAccountResponseSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  name: z.string(),
+  role: z.string(),
+  organizationId: z.string().uuid(),
+});
+export type SetupAccountResponse = z.infer<typeof SetupAccountResponseSchema>;
+
+// ---- v1.1.1: Bulk create-accounts ----
+
+export const BulkSkipReasonSchema = z.enum([
+  'already_has_account',
+  'missing_email',
+  'email_taken',
+  'not_found',
+]);
+export type BulkSkipReason = z.infer<typeof BulkSkipReasonSchema>;
+
+export const BulkCreateAccountsRequestSchema = z.object({
+  attendeeIds: z.array(z.string().uuid()).min(1).max(100),
+  expiresInHours: z.number().int().min(1).max(8760).optional(), // default 168 (7d)
+});
+export type BulkCreateAccountsRequest = z.infer<typeof BulkCreateAccountsRequestSchema>;
+
+export const BulkCreatedEntrySchema = z.object({
+  attendeeId: z.string().uuid(),
+  email: z.string().email(),
+  setupUrl: z.string().url(),
+});
+export type BulkCreatedEntry = z.infer<typeof BulkCreatedEntrySchema>;
+
+export const BulkSkippedEntrySchema = z.object({
+  attendeeId: z.string().uuid(),
+  reason: BulkSkipReasonSchema,
+});
+export type BulkSkippedEntry = z.infer<typeof BulkSkippedEntrySchema>;
+
+export const BulkCreateAccountsResponseSchema = z.object({
+  created: z.array(BulkCreatedEntrySchema),
+  skipped: z.array(BulkSkippedEntrySchema),
+  summary: z.object({
+    requested: z.number().int(),
+    created: z.number().int(),
+    skipped: z.number().int(),
+  }),
+});
+export type BulkCreateAccountsResponse = z.infer<typeof BulkCreateAccountsResponseSchema>;
+

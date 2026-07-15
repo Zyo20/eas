@@ -53,8 +53,11 @@ model User {
   email          String   @unique
   passwordHash   String
   name           String
-  role           UserRole @default(admin)
-  createdAt      DateTime @default(now())
+  role              UserRole @default(admin)
+  createdAt         DateTime @default(now())
+  // Setup-link single-use marker (v1.1.1)
+  setupTokenJti     String?  // jti stored when a setup token is issued; cleared after first use
+  setupTokenUsedAt  DateTime? // set when the setup token is consumed
 
   organization      Organization @relation(fields: [organizationId], references: [id])
   events            Event[]
@@ -96,8 +99,8 @@ model Event {
   createdAt      DateTime    @default(now())
   deletedAt      DateTime?
   // Geofence — if locationLat/lng set, scans outside radiusM are flagged (not rejected)
-  locationLat    Decimal?    @db.Decimal(9, 6)
-  locationLng    Decimal?    @db.Decimal(9, 6)
+  locationLat    Decimal?    @db.Decimal(13, 10)
+  locationLng    Decimal?    @db.Decimal(13, 10)
   geofenceRadiusM Int        @default(50)
 
   organization Organization       @relation(fields: [organizationId], references: [id])
@@ -129,8 +132,8 @@ model AttendanceRecord {
   scannedAt       DateTime
   createdAt       DateTime         @default(now())
   source          AttendanceSource @default(SCAN)
-  scannerLat      Decimal?         @db.Decimal(9, 6)
-  scannerLng      Decimal?         @db.Decimal(9, 6)
+  scannerLat      Decimal?         @db.Decimal(13, 10)
+  scannerLng      Decimal?         @db.Decimal(13, 10)
   scannerDeviceId String?
   note            String?
   // Geofence audit fields — flagged (not rejected) when scanner is outside event radius

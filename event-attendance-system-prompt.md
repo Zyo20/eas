@@ -592,3 +592,81 @@ If the user says "just build it, use sensible defaults," the agent should:
 - [ ] `pnpm test` passes for the critical paths in §9
 
 When all of these are checked, v1 is done. v2 (classroom) starts after the user has run v1 against a real event at their alma mater and decided what to keep.
+
+---
+
+## v1.1.1 Addendum — Setup-Link Account Creation + Bulk Endpoint
+
+**Shipped:** 2026-07-15
+
+### What changed
+
+**v1.1 shipped a temp-password relay pattern: the admin generated a 12-char random password and relayed it to the attendee via WhatsApp / RocketChat DM / in-person. This is a security antipattern (OWASP: Forgot Password Cheat Sheet §Step 6 — never relay plaintext credentials; send a link instead). v1.1.1 replaces it with a magic-link setup flow.**
+
+#### 1. Setup-link JWT (single-use)
+
+- `POST /orgs/:orgId/attendees/:id/create-account` and `POST .../reset-account` now return `setupUrl` instead of `tempPassword`
+- The `setupUrl` is `${WEB_BASE_URL}/setup-account?token=<jwt>` where the JWT has payload:
+  ```json
+  { "jti": "<uuid>", "sub": "<userId>", "purpose": "setup", "exp": <unix-ts> }
+  ```
+- The `jti` is stored on `User.setupTokenJti`. On first valid consume, `setupTokenUsedAt` is set and `setupTokenJti` is cleared → single-use guaranteed
+- Default TTL: 168 h (7 days), configurable via `SETUP_LINK_TTL` env var (integer, hours)
+- Re-issuing a link (via `create-account` or `reset-account`) overwrites `setupTokenJti`, invalidating the previous link
+
+#### 2. New backend routes
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/auth/setup-info?token=...` | None | Peek at a setup token (returns name + email) without consuming |
+| `POST` | `/auth/setup-account` | None | Consume a setup token, set new password; returns 410 if already used |
+| `POST` | `/orgs/:orgId/attendees/bulk-create-accounts` | Admin | Create accounts for up to 100 attendees; partial-success |
+| `GET` | `/orgs/:orgId/attendees/bulk-create-accounts.csv?ids=...` | Admin | Same as above, returns `text/csv` |
+
+#### 3. Bulk endpoint contract
+
+**Skipped reasons:** `already_has_account`, `missing_email`, `email_taken`, `not_found`
+
+**Response shape:**
+```json
+{
+  "created": [{ "attendeeId": "<uuid>", "email": "...", "setupUrl": "..." }],
+  "skipped": [{ "attendeeId": "<uuid>", "reason": "already_has_account" }],
+  "summary": { "requested": 5, "created": 3, "skipped": 2 }
+}
+```
+
+#### 4. New frontend pages
+
+- `/setup-account?token=...` — welcome form ("Welcome, [name]! Pick a password"), consumes token on submit, redirects to `/login?email=...`
+- `/login` — now reads `?email=...` query param and pre-fills the email field
+
+#### 5. Admin UI changes
+
+- Attendees page: checkbox column (select-all + per-row), "Create accounts (N)" bulk action button
+- Results modal: lists setup links with **Copy all** + **Download CSV** + **Close**
+- Single-row "Create account" button now shows the `setupUrl` with a Copy button
+
+#### 6. Schema changes
+
+Two new optional columns on the `User` table:
+```prisma
+setupTokenJti     String?   // jti claim; cleared after first use
+setupTokenUsedAt  DateTime? // set when the token is consumed
+```
+
+Migration: `prisma/migrations/<timestamp>_setup_link/migration.sql`
+
+#### 7. No email service
+
+The admin still relays the `setupUrl` manually (WhatsApp, RocketChat DM, in-person). Adding an outbound email service (Mailgun / SendGrid / self-hosted Postfix) is a **v1.2 task** with its own deliverability, SPF/DKIM, and unsubscribe concerns.
+
+#### 8. Out of scope (v1.2)
+
+- Email service for automatic setup-link delivery
+- Public sign-up form
+- Attendee password-change flow (after initial setup)
+- "Forgot my password" self-service flow
+- Per-row "Send via RocketChat DM" button
+- Setup-link analytics (generated count, consumed count, conversion rate)
+- Rate limiting on the setup-account endpoint

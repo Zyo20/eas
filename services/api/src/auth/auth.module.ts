@@ -6,6 +6,7 @@ import { AuthController } from './auth.controller';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AdminGuard } from './admin.guard';
 import { AttendeeGuard } from './attendee.guard';
+import { SetupAccountService } from './setup-account.service';
 
 @Module({
   imports: [
@@ -19,8 +20,9 @@ import { AttendeeGuard } from './attendee.guard';
       }),
     }),
   ],
-  providers: [AuthService, JwtAuthGuard, AdminGuard, AttendeeGuard],
+  providers: [AuthService, JwtAuthGuard, AdminGuard, AttendeeGuard, SetupAccountService],
   controllers: [AuthController],
-  exports: [AuthService, JwtAuthGuard, AdminGuard, AttendeeGuard, JwtModule],
+  exports: [AuthService, JwtAuthGuard, AdminGuard, AttendeeGuard, JwtModule, SetupAccountService],
 })
 export class AuthModule {}
+

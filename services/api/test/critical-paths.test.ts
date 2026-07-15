@@ -14,12 +14,66 @@ import { v4 as uuidv4 } from 'uuid';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { execSync } from 'node:child_process';
+import { vi } from 'vitest';
+import { MailService } from '../src/mail/mail.service';
+import { PrismaClient } from '@prisma/client';
 
 let app: INestApplication;
 let prisma: PrismaService;
 let baseUrl: string;
 
 beforeAll(async () => {
+  // Load environment variables before doing database resolution
+  loadEnvFile();
+
+  // 1. Resolve dev database URL and construct test database URL (eas_test)
+  const originalDbUrl = process.env.DATABASE_URL || 'postgresql://eas:eas@localhost:5432/eas';
+  const urlObj = new URL(originalDbUrl);
+  urlObj.pathname = '/eas_test';
+  const testDbUrl = urlObj.toString();
+
+  // 2. Automatically recreate 'eas_test' to ensure no stale migrations/data
+  const adminPrisma = new PrismaClient({
+    datasources: {
+      db: {
+        url: originalDbUrl,
+      },
+    },
+  });
+  try {
+    // Terminate existing connections to test DB
+    await adminPrisma.$executeRawUnsafe(`
+      SELECT pg_terminate_backend(pid) 
+      FROM pg_stat_activity 
+      WHERE datname = 'eas_test' AND pid <> pg_backend_pid()
+    `).catch(() => {});
+    
+    await adminPrisma.$executeRawUnsafe('DROP DATABASE IF EXISTS eas_test');
+    await adminPrisma.$executeRawUnsafe('CREATE DATABASE eas_test');
+    console.log('Re-created test database: eas_test');
+  } catch (e: any) {
+    console.warn('Could not recreate test database, attempting to proceed:', e.message);
+  } finally {
+    await adminPrisma.$disconnect();
+  }
+
+  // 3. Override standard DATABASE_URL variable with the isolated test DB URL
+  process.env.DATABASE_URL = testDbUrl;
+
+  // 4. Run migrations and seeds on the test database
+  console.log('Deploying schema migrations to test database...');
+  execSync('npx prisma migrate deploy', {
+    env: { ...process.env, DATABASE_URL: testDbUrl },
+    stdio: 'inherit',
+  });
+
+  console.log('Seeding test database...');
+  execSync('npx tsx prisma/seed.ts', {
+    env: { ...process.env, DATABASE_URL: testDbUrl },
+    stdio: 'inherit',
+  });
+
+  // 5. Build and initialize NestJS application
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
   }).compile();
@@ -29,11 +83,37 @@ beforeAll(async () => {
   await app.init();
   prisma = app.get(PrismaService);
   baseUrl = (await app.getHttpServer()).listen(0).address() as unknown as string;
-  // Don't actually need a port — supertest uses the in-memory server
 });
 
+// Helper to load env variables manually from .env file during test environment bootstrapping
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+function loadEnvFile() {
+  const envPath = path.resolve(__dirname, '../.env');
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, 'utf8').split('\n');
+    for (const line of lines) {
+      const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+      if (match) {
+        const key = match[1];
+        if (key) {
+          let val = match[2] || '';
+          if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+          if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
+          if (!process.env[key]) {
+            process.env[key] = val;
+          }
+        }
+      }
+    }
+  }
+}
+
 afterAll(async () => {
-  await app.close();
+  if (app) {
+    await app.close();
+  }
 });
 
 async function cleanDb() {
@@ -41,8 +121,13 @@ async function cleanDb() {
   await prisma.attendanceRecord.deleteMany();
   await prisma.eventRoster.deleteMany();
   await prisma.event.deleteMany();
+  // Unlink attendees from users before deleting users (FK)
+  await prisma.attendee.updateMany({ data: { userId: null } });
+  // Delete only attendee-role users (leave the seeded admin intact)
+  await prisma.user.deleteMany({ where: { role: 'attendee' } });
   await prisma.attendee.deleteMany();
 }
+
 
 async function seedOrgAndAdmin() {
   // Use existing org/admin (from prisma/seed.ts) — find by slug
@@ -348,4 +433,151 @@ describe('EAS critical paths (brief §9 step 7)', () => {
       }
     }
   });
+
+  // ── v1.1.1: Setup-link flow ────────────────────────────────────────
+  it('setup_account_flow: magic link, one-time use, password set', async () => {
+    const { org } = await seedOrgAndAdmin();
+    const adminToken = await loginAdmin();
+    const attendee = await seedAttendee(
+      org.id,
+      'SETUP-001',
+      'Setup Tester',
+      'setup-tester@llcc.eas.arrowtest.site',
+    );
+
+    const mailSvc = app.get(MailService);
+    const sendSpy = vi.spyOn(mailSvc, 'sendSetupEmail');
+
+    // 1. POST create-account → must return setupUrl (NOT tempPassword)
+    const createRes = await request(app.getHttpServer())
+      .post(`/api/v1/orgs/${org.id}/attendees/${attendee.id}/create-account`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ email: 'setup-tester@llcc.eas.arrowtest.site' });
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.setupUrl).toMatch(/\/setup-account\?token=/);
+    expect(createRes.body.tempPassword).toBeUndefined();
+
+    // Verify email was sent
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy).toHaveBeenCalledWith(
+      'setup-tester@llcc.eas.arrowtest.site',
+      'Setup Tester',
+      createRes.body.setupUrl,
+      expect.any(Number),
+    );
+    sendSpy.mockRestore();
+
+    // 2. Extract the JWT from the setupUrl
+    const setupUrl: string = createRes.body.setupUrl;
+    const tokenMatch = setupUrl.match(/[?&]token=([^&]+)/);
+    expect(tokenMatch).not.toBeNull();
+    const setupToken = decodeURIComponent(tokenMatch![1]!);
+
+    // 3. POST /auth/setup-account with the token + new password → 201
+    const newPassword = 'MyNewP@ss123';
+    const setupRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/setup-account')
+      .send({ token: setupToken, newPassword });
+    expect(setupRes.status).toBe(201);
+    expect(setupRes.body.email).toBe('setup-tester@llcc.eas.arrowtest.site');
+
+    // 4. Second POST with the same token → 410 Gone
+    const replayRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/setup-account')
+      .send({ token: setupToken, newPassword: 'AnotherPass1' });
+    expect(replayRes.status).toBe(410);
+
+    // 5. Login with email + newPassword → 200 + JWT
+    const loginRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email: 'setup-tester@llcc.eas.arrowtest.site', password: newPassword });
+    expect(loginRes.status).toBe(200);
+    expect(loginRes.body.token).toBeTruthy();
+    expect(loginRes.body.user.role).toBe('attendee');
+  });
+
+  // ── v1.1.1: Bulk create-accounts ──────────────────────────────────
+  it('bulk_create_accounts: partial success, summary correct', async () => {
+    const { org } = await seedOrgAndAdmin();
+    const adminToken = await loginAdmin();
+    const bcryptMod = await import('bcryptjs');
+
+    // 1. Create 5 attendees:
+    //    - 3 with email and no account (should be created)
+    //    - 1 with email but already has account (should be skipped: already_has_account)
+    //    - 1 with null email → but Attendee.email is required in schema, so use empty string check workaround
+    //      The schema requires email, so we create with a placeholder and patch to simulate missing_email.
+    //      Actually: the skipped reason 'missing_email' applies when Attendee.email is falsy. Since the
+    //      schema enforces email, we'll rely on the service checking `!attendee.email`.
+    //      For the test: create attendee normally but manually set email to empty string in DB.
+
+    const a1 = await seedAttendee(org.id, 'BULK-001', 'Alice Bulk', 'bulk-alice@llcc.eas.arrowtest.site');
+    const a2 = await seedAttendee(org.id, 'BULK-002', 'Bob Bulk', 'bulk-bob@llcc.eas.arrowtest.site');
+    const a3 = await seedAttendee(org.id, 'BULK-003', 'Carol Bulk', 'bulk-carol@llcc.eas.arrowtest.site');
+
+    // Attendee with existing account
+    const a4 = await seedAttendee(org.id, 'BULK-004', 'Dave Bulk', 'bulk-dave@llcc.eas.arrowtest.site');
+    const a4User = await prisma.user.create({
+      data: {
+        organizationId: org.id,
+        email: 'bulk-dave@llcc.eas.arrowtest.site',
+        passwordHash: await bcryptMod.hash('P@$$w0rd', 10),
+        name: 'Dave Bulk',
+        role: 'attendee',
+      },
+    });
+    await prisma.attendee.update({ where: { id: a4.id }, data: { userId: a4User.id } });
+
+    // Attendee with empty email (simulate missing_email)
+    const a5 = await prisma.attendee.create({
+      data: { organizationId: org.id, identifier: 'BULK-005', fullName: 'Eve Bulk', email: '' },
+    });
+
+    const attendeeIds = [a1.id, a2.id, a3.id, a4.id, a5.id];
+
+    const mailSvc = app.get(MailService);
+    const sendSpy = vi.spyOn(mailSvc, 'sendSetupEmail');
+
+    // 2. POST bulk-create-accounts
+    const bulkRes = await request(app.getHttpServer())
+      .post(`/api/v1/orgs/${org.id}/attendees/bulk-create-accounts`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ attendeeIds });
+    expect(bulkRes.status).toBe(200);
+
+    // Verify email was sent for the 3 successfully created users
+    expect(sendSpy).toHaveBeenCalledTimes(3);
+    sendSpy.mockRestore();
+
+    const { created, skipped, summary } = bulkRes.body as {
+      created: Array<{ attendeeId: string; email: string; setupUrl: string }>;
+      skipped: Array<{ attendeeId: string; reason: string }>;
+      summary: { requested: number; created: number; skipped: number };
+    };
+
+    // 3. Assert counts
+    expect(created.length).toBe(3);
+    expect(skipped.length).toBe(2);
+    expect(summary.requested).toBe(5);
+    expect(summary.created).toBe(3);
+    expect(summary.skipped).toBe(2);
+
+    // 4. Assert skipped reasons
+    const skippedReasons = skipped.map((s) => s.reason);
+    expect(skippedReasons).toContain('already_has_account');
+    expect(skippedReasons).toContain('missing_email');
+
+    // 5. Assert each created entry has a valid-looking setupUrl JWT
+    for (const entry of created) {
+      expect(entry.setupUrl).toMatch(/\/setup-account\?token=/);
+      const tokenMatch = entry.setupUrl.match(/[?&]token=([^&]+)/);
+      expect(tokenMatch).not.toBeNull();
+      const tokenParts = decodeURIComponent(tokenMatch![1]!).split('.');
+      expect(tokenParts.length).toBe(3); // JWT has 3 parts
+      const payload = JSON.parse(Buffer.from(tokenParts[1]!, 'base64url').toString());
+      expect(payload.purpose).toBe('setup');
+      expect(payload.sub).toBeTruthy();
+    }
+  });
 });
+

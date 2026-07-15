@@ -1,9 +1,15 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as Papa from 'papaparse';
-import * as bcrypt from 'bcryptjs';
 import { UserRole } from '@prisma/client';
 import { CreateAttendeeRequest, UpdateAttendeeRequest } from '@eas/shared';
+import { SetupAccountService } from '../auth/setup-account.service';
+import { MailService } from '../mail/mail.service';
 
 export type AttendeeDto = {
   id: string;
@@ -20,11 +26,34 @@ export type AttendeeDto = {
 export type CsvImportError = { row: number; message: string };
 export type CsvImportResult = { created: number; errors: CsvImportError[] };
 
+export type BulkCreatedEntry = {
+  attendeeId: string;
+  email: string;
+  setupUrl: string;
+};
+
+export type BulkSkipReason = 'already_has_account' | 'missing_email' | 'email_taken' | 'not_found';
+
+export type BulkSkippedEntry = {
+  attendeeId: string;
+  reason: BulkSkipReason;
+};
+
+export type BulkCreateAccountsResult = {
+  created: BulkCreatedEntry[];
+  skipped: BulkSkippedEntry[];
+  summary: { requested: number; created: number; skipped: number };
+};
+
 const PAGE_SIZE = 50;
 
 @Injectable()
 export class AttendeesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly setupTokenSvc: SetupAccountService,
+    private readonly mailService: MailService,
+  ) {}
 
   private toDto(a: {
     id: string;
@@ -85,25 +114,23 @@ export class AttendeesService {
 
   /**
    * Create a User account for an Attendee and link them via Attendee.userId.
-   * Returns the temporary password (v1 has no email service, so the admin
-   * relays this to the attendee out-of-band). The attendee can change it
-   * after first login in v1.1 (password-change flow not in v1).
+   * Returns a setupUrl (magic link valid for SETUP_LINK_TTL hours, default 168).
+   * The admin copies the setupUrl and relays it to the attendee — no email service in v1.1.1.
    *
-   * Throws ConflictException if the attendee already has an account, or if
-   * the email is already taken by another user in this org.
+   * Throws ConflictException if the attendee already has an account, or if the email is taken.
    */
   async createAccount(
     orgId: string,
     attendeeId: string,
     email: string,
-  ): Promise<{ attendeeId: string; userId: string; email: string; tempPassword: string }> {
+  ): Promise<{ attendeeId: string; userId: string; email: string; setupUrl: string }> {
     const attendee = await this.prisma.attendee.findFirst({
       where: { id: attendeeId, organizationId: orgId },
     });
     if (!attendee) throw new NotFoundException(`Attendee ${attendeeId} not found`);
     if (attendee.userId) {
       throw new ConflictException(
-        `Attendee already has an account. Use POST /attendees/:id/reset-account to rotate the password.`,
+        `Attendee already has an account. Use POST /attendees/:id/reset-account to issue a new setup link.`,
       );
     }
     // Email must be unique across the User table (it's the login key).
@@ -111,14 +138,14 @@ export class AttendeesService {
     if (existing) {
       throw new ConflictException(`Email ${email} is already registered to a user`);
     }
-    // Generate a 12-char temp password: a-zA-Z0-9, easy to read
-    const tempPassword = this.generateTempPassword();
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+    // Create User with a dummy passwordHash — they'll set the real password via the setup link.
+    // We use an empty bcrypt hash that can never match any real password input.
     const user = await this.prisma.user.create({
       data: {
         organizationId: orgId,
         email,
-        passwordHash,
+        passwordHash: '*', // placeholder; will be replaced when setup link is consumed
         name: attendee.fullName,
         role: UserRole.attendee,
       },
@@ -127,18 +154,25 @@ export class AttendeesService {
       where: { id: attendeeId },
       data: { userId: user.id },
     });
-    return { attendeeId, userId: user.id, email, tempPassword };
+
+    const ttlHours = Number(this.getSetupLinkTtl());
+    const token = await this.setupTokenSvc.signSetupToken(user.id, ttlHours);
+    const setupUrl = this.setupTokenSvc.buildSetupUrl(token);
+
+    // Send magic setup link email to the attendee
+    await this.mailService.sendSetupEmail(email, attendee.fullName, setupUrl, ttlHours);
+
+    return { attendeeId, userId: user.id, email, setupUrl };
   }
 
   /**
-   * Reset the attendee's account password. Requires the attendee to already have
-   * an account. Returns a new temp password. The old password is invalidated.
-   * Useful for "I forgot my password" flows and post-incident rotation.
+   * Reset the attendee's account — issues a new setup link.
+   * The attendee's current password is invalidated until they consume the new link.
    */
   async resetAccount(
     orgId: string,
     attendeeId: string,
-  ): Promise<{ attendeeId: string; userId: string; email: string; tempPassword: string }> {
+  ): Promise<{ attendeeId: string; userId: string; email: string; setupUrl: string }> {
     const attendee = await this.prisma.attendee.findFirst({
       where: { id: attendeeId, organizationId: orgId },
     });
@@ -150,26 +184,112 @@ export class AttendeesService {
     }
     const user = await this.prisma.user.findUnique({ where: { id: attendee.userId } });
     if (!user) throw new NotFoundException(`Linked user not found`);
-    const tempPassword = this.generateTempPassword();
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { passwordHash },
-    });
-    return { attendeeId, userId: user.id, email: user.email, tempPassword };
+
+    const ttlHours = Number(this.getSetupLinkTtl());
+    const token = await this.setupTokenSvc.signSetupToken(user.id, ttlHours);
+    const setupUrl = this.setupTokenSvc.buildSetupUrl(token);
+
+    // Send magic setup link email to the attendee
+    await this.mailService.sendSetupEmail(user.email, attendee.fullName, setupUrl, ttlHours);
+
+    return { attendeeId, userId: user.id, email: user.email, setupUrl };
   }
 
   /**
-   * 12-char temp password: easy-to-read chars (no 0/O/1/l/I confusion).
-   * Used by both createAccount and resetAccount. Not cryptographically strong —
-   * v1 has no email service so the admin relays it out-of-band; the attendee
-   * must change it on first login (v1.1).
+   * Bulk create User accounts for a list of attendees.
+   * Partial-success: attendees that fail (already has account, missing email, etc.)
+   * are reported in `skipped`. Successfully provisioned ones are in `created`.
+   * Max 100 attendeeIds per call (enforced by the controller/DTO).
    */
-  private generateTempPassword(): string {
-    const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
-    return Array.from({ length: 12 }, () =>
-      chars[Math.floor(Math.random() * chars.length)],
-    ).join('');
+  async bulkCreateAccounts(
+    orgId: string,
+    attendeeIds: string[],
+    expiresInHours = 168,
+  ): Promise<BulkCreateAccountsResult> {
+    // Fetch all requested attendees in one query
+    const found = await this.prisma.attendee.findMany({
+      where: { id: { in: attendeeIds }, organizationId: orgId },
+    });
+    const foundMap = new Map(found.map((a) => [a.id, a]));
+
+    // Check which emails are already taken by any User
+    const emailsToCheck = found
+      .filter((a) => a.email && !a.userId)
+      .map((a) => a.email);
+    const takenUsers = emailsToCheck.length
+      ? await this.prisma.user.findMany({
+          where: { email: { in: emailsToCheck } },
+          select: { email: true },
+        })
+      : [];
+    const takenEmails = new Set(takenUsers.map((u) => u.email));
+
+    const created: BulkCreatedEntry[] = [];
+    const skipped: BulkSkippedEntry[] = [];
+
+    for (const attendeeId of attendeeIds) {
+      const attendee = foundMap.get(attendeeId);
+      if (!attendee) {
+        skipped.push({ attendeeId, reason: 'not_found' });
+        continue;
+      }
+      if (attendee.userId) {
+        skipped.push({ attendeeId, reason: 'already_has_account' });
+        continue;
+      }
+      if (!attendee.email) {
+        skipped.push({ attendeeId, reason: 'missing_email' });
+        continue;
+      }
+      if (takenEmails.has(attendee.email)) {
+        skipped.push({ attendeeId, reason: 'email_taken' });
+        continue;
+      }
+
+      // Create User + link Attendee atomically
+      try {
+        const user = await this.prisma.$transaction(async (tx) => {
+          const u = await tx.user.create({
+            data: {
+              organizationId: orgId,
+              email: attendee.email!,
+              passwordHash: '*', // placeholder until setup link consumed
+              name: attendee.fullName,
+              role: UserRole.attendee,
+            },
+          });
+          await tx.attendee.update({
+            where: { id: attendeeId },
+            data: { userId: u.id },
+          });
+          return u;
+        });
+
+        // Sign setup token after the transaction has successfully committed
+        const token = await this.setupTokenSvc.signSetupToken(user.id, expiresInHours);
+        const setupUrl = this.setupTokenSvc.buildSetupUrl(token);
+
+        // Send magic setup link email to the attendee
+        await this.mailService.sendSetupEmail(attendee.email!, attendee.fullName, setupUrl, expiresInHours);
+
+        created.push({ attendeeId, email: attendee.email!, setupUrl });
+        // Mark the email as now taken so duplicate emails in the same batch are caught
+        takenEmails.add(attendee.email!);
+      } catch (err) {
+        // Rare race condition (e.g. email taken between the pre-check and create)
+        skipped.push({ attendeeId, reason: 'email_taken' });
+      }
+    }
+
+    return {
+      created,
+      skipped,
+      summary: {
+        requested: attendeeIds.length,
+        created: created.length,
+        skipped: skipped.length,
+      },
+    };
   }
 
   async list(
@@ -357,5 +477,34 @@ export class AttendeesService {
       }
     }
     return { created, errors };
+  }
+
+  /**
+   * Returns a map of attendeeId → { identifier, fullName, email } for the given ids.
+   * Used by the CSV controller route to enrich setup-link rows.
+   */
+  async getAttendeeDetailsMap(
+    orgId: string,
+    attendeeIds: string[],
+  ): Promise<Map<string, { identifier: string; fullName: string; email: string }>> {
+    const rows = await this.prisma.attendee.findMany({
+      where: { id: { in: attendeeIds }, organizationId: orgId },
+      select: { id: true, identifier: true, fullName: true, email: true },
+    });
+    return new Map(rows.map((r) => [r.id, { identifier: r.identifier, fullName: r.fullName, email: r.email }]));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
+
+  private getSetupLinkTtl(): number {
+
+    const raw = process.env['SETUP_LINK_TTL'];
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return 168; // 7 days default
   }
 }

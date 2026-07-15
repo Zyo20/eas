@@ -5,6 +5,22 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api, getToken, setToken, type Event, type Summary, type Attendee, type FlaggedRecord, type FlaggedCount } from '@/lib/api';
 
+const getScannerUrl = (eventId: string) => {
+  const envUrl = process.env.NEXT_PUBLIC_SCANNER_URL;
+  if (envUrl) {
+    return `${envUrl}/scan/${eventId}`;
+  }
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    const isLocalIp = hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.') || hostname.endsWith('.local');
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || isLocalIp) {
+      // Use the same hostname but with the scanner dev port (5173)
+      return `http://${hostname}:5173/scan/${eventId}`;
+    }
+  }
+  return `https://scanner.eas.arrowtest.site/scan/${eventId}`;
+};
+
 export default function EventDetailPage() {
   const { id: eventId } = useParams<{ id: string }>();
   const router = useRouter();
@@ -100,13 +116,13 @@ export default function EventDetailPage() {
           </div>
           {event.locationLat != null && event.locationLng != null && (
             <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>
-              📍 Geofence: {event.locationLat.toFixed(6)}, {event.locationLng.toFixed(6)} (radius {event.geofenceRadiusM ?? 50}m)
+              📍 Geofence: {event.locationLat.toFixed(10)}, {event.locationLng.toFixed(10)} (radius {event.geofenceRadiusM ?? 50}m)
             </div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <a
-            href={`https://scanner.eas.arrowtest.site/scan/${event.id}`}
+            href={getScannerUrl(event.id)}
             target="_blank"
             rel="noreferrer"
             style={{ padding: '8px 12px', borderRadius: 6, background: '#1d4ed8', color: 'white', textDecoration: 'none', fontSize: 13, fontWeight: 600 }}

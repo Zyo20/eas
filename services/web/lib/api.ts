@@ -90,7 +90,9 @@ export type Attendee = {
   identifier: string;
   fullName: string;
   email?: string | null;
+  hasAccount: boolean; // true if a User account is linked
 };
+
 
 export type Event = {
   id: string;
@@ -139,3 +141,65 @@ export type FlaggedRecord = {
 };
 
 export type FlaggedCount = { eventId: string; flaggedCount: number };
+
+// ---- v1.1.1: Setup-link types ----
+
+export type SetupLinkEntry = {
+  attendeeId: string;
+  email: string;
+  setupUrl: string;
+};
+
+export type BulkSkipReason = 'already_has_account' | 'missing_email' | 'email_taken' | 'not_found';
+
+export type BulkSkippedEntry = {
+  attendeeId: string;
+  reason: BulkSkipReason;
+};
+
+export type BulkCreateAccountsResponse = {
+  created: SetupLinkEntry[];
+  skipped: BulkSkippedEntry[];
+  summary: { requested: number; created: number; skipped: number };
+};
+
+export type SetupInfoResponse = {
+  email: string;
+  name: string;
+};
+
+// ---- v1.1.1: API helpers ----
+
+/**
+ * Bulk create attendee accounts. Returns setupUrls for successful entries.
+ */
+export async function bulkCreateAccounts(
+  orgId: string,
+  attendeeIds: string[],
+  expiresInHours?: number,
+): Promise<BulkCreateAccountsResponse> {
+  return api.post<BulkCreateAccountsResponse>(`/orgs/${orgId}/attendees/bulk-create-accounts`, {
+    attendeeIds,
+    ...(expiresInHours !== undefined ? { expiresInHours } : {}),
+  });
+}
+
+/**
+ * Peek at a setup token without consuming it.
+ * Returns the user's name + email for the welcome page.
+ */
+export async function getSetupInfo(token: string): Promise<SetupInfoResponse> {
+  return api.get<SetupInfoResponse>(`/auth/setup-info?token=${encodeURIComponent(token)}`);
+}
+
+/**
+ * Consume a setup token and set a new password.
+ * Returns the updated user on success. Throws 410 if already consumed.
+ */
+export async function consumeSetupToken(
+  token: string,
+  newPassword: string,
+): Promise<{ id: string; email: string; name: string; role: string; organizationId: string }> {
+  return api.post(`/auth/setup-account`, { token, newPassword });
+}
+

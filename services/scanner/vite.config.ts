@@ -2,6 +2,20 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+const allowedHosts = [
+  'scanner.eas.arrowtest.site',
+  'web.eas.arrowtest.site',
+  'eas.arrowtest.site',
+  'api.eas.arrowtest.site',
+  'localhost',
+  '127.0.0.1',
+  '.pinggy.link',
+  '.pinggy.net',
+  '.pinggy.io',
+  '.ngrok-free.app',
+  '.loca.lt',
+];
+
 export default defineConfig({
   plugins: [
     react(),
@@ -37,6 +51,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '127.0.0.1',
+    allowedHosts,
     proxy: {
       '/api': 'http://localhost:4000',
     },
@@ -46,13 +61,6 @@ export default defineConfig({
     port: 5173,
     // Caddy proxies public requests to scanner.eas.arrowtest.site on :443 → 127.0.0.1:5173.
     // Vite's preview server is gated on Host header by default in 5+; whitelist our subdomains.
-    allowedHosts: [
-      'scanner.eas.arrowtest.site',
-      'web.eas.arrowtest.site',
-      'eas.arrowtest.site',
-      'api.eas.arrowtest.site',
-      'localhost',
-      '127.0.0.1',
-    ],
+    allowedHosts,
   },
 });
