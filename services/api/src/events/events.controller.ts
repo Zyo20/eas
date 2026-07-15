@@ -24,6 +24,7 @@ class CreateEventBody {
   @IsOptional() @IsString() @MaxLength(200) location?: string;
   @IsString() startsAt!: string;
   @IsString() endsAt!: string;
+  @IsOptional() @IsIn(['DRAFT', 'OPEN', 'CLOSED']) status?: 'DRAFT' | 'OPEN' | 'CLOSED';
   @IsArray() @IsUUID('4', { each: true }) attendeeIds!: string[];
   @IsOptional() @IsNumber() @Min(-90) @Max(90) locationLat?: number;
   @IsOptional() @IsNumber() @Min(-180) @Max(180) locationLng?: number;

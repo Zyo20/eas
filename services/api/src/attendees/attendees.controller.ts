@@ -115,19 +115,34 @@ export class AttendeesController {
 
   @Post('import')
   @UseInterceptors(FileInterceptor('file'))
-  @ApiOperation({ summary: 'Bulk import attendees from a CSV file' })
+  @ApiOperation({ summary: 'Bulk import attendees from a CSV or Excel file' })
   @ApiResponse({ status: 201, description: 'Import result with created count and errors' })
   async import(
     @Param('orgId', new ParseUUIDPipe()) orgId: string,
-    @UploadedFile() file: { buffer: Buffer; mimetype: string } | undefined,
+    @UploadedFile() file: { buffer: Buffer; mimetype: string; originalname?: string } | undefined,
   ): Promise<CsvImportResult> {
     if (!file) {
       throw new BadRequestException('Missing file (multipart field "file")');
     }
-    if (!file.mimetype.includes('csv') && !file.mimetype.includes('text')) {
-      throw new BadRequestException(`Expected CSV, got ${file.mimetype}`);
+    const name = (file.originalname ?? '').toLowerCase();
+    const isExcel =
+      file.mimetype.includes('excel') ||
+      file.mimetype.includes('spreadsheet') ||
+      file.mimetype.includes('vnd.ms-excel') ||
+      file.mimetype.includes('vnd.openxmlformats-officedocument.spreadsheetml.sheet') ||
+      name.endsWith('.xlsx') ||
+      name.endsWith('.xls');
+
+    const isCsv =
+      file.mimetype.includes('csv') ||
+      file.mimetype.includes('text') ||
+      name.endsWith('.csv');
+
+    if (!isExcel && !isCsv) {
+      throw new BadRequestException(`Expected CSV or Excel file, got ${file.mimetype}`);
     }
-    return this.attendees.importCsv(orgId, file.buffer.toString('utf8'));
+
+    return this.attendees.importFile(orgId, file.buffer, isExcel);
   }
 
   /**

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 import { UserRole } from '@prisma/client';
 import { CreateAttendeeRequest, UpdateAttendeeRequest } from '@eas/shared';
 import { SetupAccountService } from '../auth/setup-account.service';
@@ -392,22 +393,58 @@ export class AttendeesService {
    * Per §4: returns { created, errors }. Malformed rows are reported, not fatal.
    */
   async importCsv(orgId: string, csvText: string): Promise<CsvImportResult> {
+    return this.importFile(orgId, Buffer.from(csvText, 'utf8'), false);
+  }
+
+  /**
+   * Bulk import via CSV or Excel file.
+   * Expected columns: identifier, fullName, email (header row required).
+   * Email is REQUIRED (needed for account creation).
+   * Per §4: returns { created, errors }. Malformed rows are reported, not fatal.
+   */
+  async importFile(orgId: string, buffer: Buffer, isExcel: boolean): Promise<CsvImportResult> {
     await this.assertOrgExists(orgId);
-    if (!csvText.trim()) {
-      throw new BadRequestException('CSV is empty');
+    let rows: Array<Record<string, string>> = [];
+    if (isExcel) {
+      try {
+        const workbook = XLSX.read(buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) {
+          throw new BadRequestException('Excel file has no sheets');
+        }
+        const worksheet = workbook.Sheets[sheetName];
+        if (!worksheet) {
+          throw new BadRequestException('Excel worksheet is empty or missing');
+        }
+        rows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet).map((row) => {
+          const cleanRow: Record<string, string> = {};
+          Object.entries(row).forEach(([k, v]) => {
+            cleanRow[k.trim()] = String(v ?? '').trim();
+          });
+          return cleanRow;
+        });
+      } catch (err) {
+        throw new BadRequestException(`Excel parse error: ${(err as Error).message}`);
+      }
+    } else {
+      const csvText = buffer.toString('utf8');
+      if (!csvText.trim()) {
+        throw new BadRequestException('CSV is empty');
+      }
+      const parsed = Papa.parse<Record<string, string>>(csvText, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (h) => h.trim(),
+      });
+      if (parsed.errors.length > 0) {
+        const first = parsed.errors[0]!;
+        throw new BadRequestException(`CSV parse error at row ${first.row}: ${first.message}`);
+      }
+      rows = parsed.data;
     }
-    const parsed = Papa.parse<Record<string, string>>(csvText, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: (h) => h.trim(),
-    });
-    if (parsed.errors.length > 0) {
-      const first = parsed.errors[0]!;
-      throw new BadRequestException(`CSV parse error at row ${first.row}: ${first.message}`);
-    }
-    const rows = parsed.data;
+
     if (rows.length === 0) {
-      throw new BadRequestException('CSV has no data rows');
+      throw new BadRequestException('File has no data rows');
     }
 
     const errors: CsvImportError[] = [];
@@ -446,11 +483,11 @@ export class AttendeesService {
         return;
       }
       if (seenIdentifiers.has(identifier)) {
-        errors.push({ row: lineNo, message: `duplicate identifier "${identifier}" in CSV` });
+        errors.push({ row: lineNo, message: `duplicate identifier "${identifier}" in file` });
         return;
       }
       if (seenEmails.has(email)) {
-        errors.push({ row: lineNo, message: `duplicate email "${email}" in CSV` });
+        errors.push({ row: lineNo, message: `duplicate email "${email}" in file` });
         return;
       }
       seenIdentifiers.add(identifier);

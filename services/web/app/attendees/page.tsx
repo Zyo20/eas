@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, FormEvent } from 'react';
 import { api, type Attendee, bulkCreateAccounts, type BulkCreateAccountsResponse } from '@/lib/api';
+import * as XLSX from 'xlsx';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,29 @@ export default function AttendeesPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [modal, setModal] = useState<ModalState>({ kind: 'none' });
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+
+  function onBulkSelect() {
+    if (!bulkText.trim() || !list) return;
+    const targets = new Set(
+      bulkText
+        .split(/[\s,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    if (targets.size === 0) return;
+    const matchedIds = list
+      .filter((a) => targets.has(a.identifier))
+      .map((a) => a.id);
+
+    setSelected((prev) => {
+      const next = new Set(prev);
+      matchedIds.forEach((id) => next.add(id));
+      return next;
+    });
+    setBulkText('');
+  }
+
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -180,13 +204,20 @@ export default function AttendeesPage() {
     URL.revokeObjectURL(url);
   }
 
-  function downloadSampleCsv() {
-    const csvContent = 'identifier,fullName,email\r\nATT-001,John Doe,john.doe@example.com\r\nATT-002,Jane Smith,jane.smith@example.com';
-    const blob = new Blob([csvContent], { type: 'text/csv' });
+  function downloadSampleExcel() {
+    const data = [
+      { identifier: 'ATT-001', fullName: 'John Doe', email: 'john.doe@example.com' },
+      { identifier: 'ATT-002', fullName: 'Jane Smith', email: 'jane.smith@example.com' }
+    ];
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Attendees');
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'attendees_bulk_import_sample.csv';
+    a.download = 'attendees_bulk_import_sample.xlsx';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -427,14 +458,14 @@ export default function AttendeesPage() {
           </button>
         </form>
 
-        {/* CSV import */}
+        {/* Excel/CSV import */}
         <div style={{ marginBottom: 16, padding: 12, background: '#f1f5f9', borderRadius: 8, fontSize: 13, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div>
-            <strong>Bulk import:</strong> upload a CSV with columns <code>identifier, fullName, email</code>.
+            <strong>Bulk import:</strong> upload a CSV or Excel file with columns <code>identifier, fullName, email</code>.
           </div>
           <button
             type="button"
-            onClick={downloadSampleCsv}
+            onClick={downloadSampleExcel}
             style={{
               background: 'none',
               border: 'none',
@@ -446,9 +477,9 @@ export default function AttendeesPage() {
               fontSize: 13,
             }}
           >
-            Download Sample CSV
+            Download Sample Excel
           </button>
-          <input type="file" accept=".csv" onChange={onImport} />
+          <input type="file" accept=".csv,.xlsx,.xls" onChange={onImport} />
         </div>
 
         {/* Toolbar: filter + bulk action */}
@@ -461,13 +492,38 @@ export default function AttendeesPage() {
             gap: 8,
           }}
         >
-          <input
-            type="search"
-            placeholder={`Filter ${list.length} attendees…`}
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            style={{ ...inp, maxWidth: 300 }}
-          />
+          <div style={{ display: 'flex', gap: 6, flex: 1 }}>
+            <input
+              type="search"
+              placeholder={`Filter ${list.length} attendees…`}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              style={{ ...inp, maxWidth: 220 }}
+            />
+            <input
+              type="text"
+              placeholder="Bulk select by identifiers (comma/space/newline separated)…"
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              style={{ ...inp, maxWidth: 380 }}
+            />
+            <button
+              type="button"
+              onClick={onBulkSelect}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 6,
+                border: '1px solid #cbd5e1',
+                background: '#f8fafc',
+                cursor: 'pointer',
+                fontSize: 13,
+                fontWeight: 500,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Select
+            </button>
+          </div>
           {someSelected && (
             <button
               id="bulk-create-accounts-btn"

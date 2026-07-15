@@ -51,6 +51,7 @@ export const CreateEventRequestSchema = z.object({
   location: z.string().max(200).optional().nullable(),
   startsAt: z.string().datetime(),
   endsAt: z.string().datetime(),
+  status: z.enum(['DRAFT', 'OPEN', 'CLOSED']).optional(),
   attendeeIds: z.array(z.string().uuid()).default([]),
   locationLat: z.number().min(-90).max(90).optional().nullable(),
   locationLng: z.number().min(-180).max(180).optional().nullable(),

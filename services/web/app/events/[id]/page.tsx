@@ -150,6 +150,30 @@ export default function EventDetailPage() {
               Close event
             </button>
           )}
+          <button
+            onClick={async () => {
+              if (!confirm('Are you sure you want to delete this event? This action will soft-delete the event and audit records will be preserved.')) return;
+              try {
+                const me = await api.get<{ organizationId: string }>('/auth/me');
+                await api.del(`/orgs/${me.organizationId}/events/${event.id}`);
+                router.replace('/dashboard');
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : 'Delete failed');
+              }
+            }}
+            style={{
+              padding: '8px 12px',
+              borderRadius: 6,
+              border: '1px solid #fca5a5',
+              background: '#fef2f2',
+              color: '#b91c1c',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Delete event
+          </button>
         </div>
       </header>
 

@@ -95,7 +95,7 @@ export class EventsService {
           location: body.location ?? null,
           startsAt,
           endsAt,
-          status: 'DRAFT',
+          status: body.status ?? 'DRAFT',
           createdById,
           locationLat,
           locationLng,

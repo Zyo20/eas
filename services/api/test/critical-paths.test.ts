@@ -446,7 +446,7 @@ describe('EAS critical paths (brief §9 step 7)', () => {
     );
 
     const mailSvc = app.get(MailService);
-    const sendSpy = vi.spyOn(mailSvc, 'sendSetupEmail');
+    const sendSpy = vi.spyOn(mailSvc, 'sendSetupEmail').mockImplementation(async () => {});
 
     // 1. POST create-account → must return setupUrl (NOT tempPassword)
     const createRes = await request(app.getHttpServer())
@@ -536,7 +536,7 @@ describe('EAS critical paths (brief §9 step 7)', () => {
     const attendeeIds = [a1.id, a2.id, a3.id, a4.id, a5.id];
 
     const mailSvc = app.get(MailService);
-    const sendSpy = vi.spyOn(mailSvc, 'sendSetupEmail');
+    const sendSpy = vi.spyOn(mailSvc, 'sendSetupEmail').mockImplementation(async () => {});
 
     // 2. POST bulk-create-accounts
     const bulkRes = await request(app.getHttpServer())

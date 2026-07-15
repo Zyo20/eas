@@ -16,6 +16,7 @@ export default function NewEventPage() {
     location: '',
     startsAt: '2026-08-10T09:00',
     endsAt: '2026-08-10T17:00',
+    status: 'DRAFT' as 'DRAFT' | 'OPEN' | 'CLOSED',
     // Geofence (optional). Lat/Lng must be paired; radius defaults to 50m on the server
     // if the event has no geofence, but the form lets admin override per event.
     locationLat: '' as string,
@@ -25,6 +26,28 @@ export default function NewEventPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [bulkText, setBulkText] = useState('');
+
+  function onBulkSelect() {
+    if (!bulkText.trim()) return;
+    const targets = new Set(
+      bulkText
+        .split(/[\s,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    if (targets.size === 0) return;
+    const matchedIds = attendees
+      .filter((a) => targets.has(a.identifier))
+      .map((a) => a.id);
+
+    setPicked((prev) => {
+      const next = new Set(prev);
+      matchedIds.forEach((id) => next.add(id));
+      return next;
+    });
+    setBulkText('');
+  }
 
   useEffect(() => {
     (async () => {
@@ -90,12 +113,19 @@ export default function NewEventPage() {
         <Field label="Name">
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required style={inp} />
         </Field>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 140px', gap: 12 }}>
           <Field label="Starts at">
             <input type="datetime-local" value={form.startsAt} onChange={(e) => setForm({ ...form, startsAt: e.target.value })} required style={inp} />
           </Field>
           <Field label="Ends at">
             <input type="datetime-local" value={form.endsAt} onChange={(e) => setForm({ ...form, endsAt: e.target.value })} required style={inp} />
+          </Field>
+          <Field label="Status">
+            <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as any })} style={inp}>
+              <option value="DRAFT">Draft</option>
+              <option value="OPEN">Open</option>
+              <option value="CLOSED">Closed</option>
+            </select>
           </Field>
         </div>
         <Field label="Location">
@@ -153,13 +183,38 @@ export default function NewEventPage() {
           <p style={{ ...sm, marginTop: 8 }}>Scans outside this radius will be flagged but not rejected.</p>
         </Field>
         <Field label={`Roster (${picked.size} of ${attendees.length})`}>
-          <input
-            type="search"
-            placeholder="Filter…"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            style={{ ...inp, marginBottom: 8 }}
-          />
+          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            <input
+              type="search"
+              placeholder="Filter by name/identifier…"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              style={{ ...inp, flex: 1 }}
+            />
+            <input
+              type="text"
+              placeholder="Bulk select by identifiers (comma/space separated)…"
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              style={{ ...inp, flex: 2 }}
+            />
+            <button
+              type="button"
+              onClick={onBulkSelect}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 6,
+                border: '1px solid #cbd5e1',
+                background: '#f8fafc',
+                cursor: 'pointer',
+                fontSize: 13,
+                fontWeight: 500,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Select
+            </button>
+          </div>
           <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: 6 }}>
             {filtered.map((a) => (
               <label
