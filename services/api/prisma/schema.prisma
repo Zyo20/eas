@@ -1,0 +1,148 @@
+// EAS Prisma schema — v1
+// See event-attendance-system-prompt.md §2 for the locked shape.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgType {
+  SCHOOL
+  ORG
+}
+
+enum EventStatus {
+  DRAFT
+  OPEN
+  CLOSED
+}
+
+enum AttendanceSource {
+  SCAN
+  MANUAL
+  IMPORT
+}
+
+enum UserRole {
+  admin
+  attendee
+}
+
+model Organization {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  slug      String    @unique
+  type      OrgType
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  users     User[]
+  events    Event[]
+  attendees Attendee[]
+
+  @@index([slug])
+}
+
+model User {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  email          String   @unique
+  passwordHash   String
+  name           String
+  role           UserRole @default(admin)
+  createdAt      DateTime @default(now())
+
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  events            Event[]
+  attendeeAccount   Attendee?    @relation("AttendeeUser")
+
+  @@index([organizationId])
+}
+
+model Attendee {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  identifier     String
+  fullName       String
+  email          String
+  userId         String?  @unique @db.Uuid
+  qrSecret       String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  photoUrl       String?
+  createdAt      DateTime @default(now())
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  user         User?                @relation("AttendeeUser", fields: [userId], references: [id], onDelete: SetNull)
+  records     AttendanceRecord[]
+  rosters     EventRoster[]
+
+  @@unique([organizationId, identifier])
+  @@index([organizationId])
+}
+
+model Event {
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String      @db.Uuid
+  name           String
+  description    String?
+  location       String?
+  startsAt       DateTime
+  endsAt         DateTime
+  status         EventStatus @default(DRAFT)
+  createdById    String      @db.Uuid
+  createdAt      DateTime    @default(now())
+  deletedAt      DateTime?
+  // Geofence — if locationLat/lng set, scans outside radiusM are flagged (not rejected)
+  locationLat    Decimal?    @db.Decimal(9, 6)
+  locationLng    Decimal?    @db.Decimal(9, 6)
+  geofenceRadiusM Int        @default(50)
+
+  organization Organization       @relation(fields: [organizationId], references: [id])
+  createdBy    User               @relation(fields: [createdById], references: [id])
+  rosters      EventRoster[]
+  records      AttendanceRecord[]
+
+  @@index([organizationId, startsAt])
+  @@index([status])
+}
+
+model EventRoster {
+  eventId    String   @db.Uuid
+  attendeeId String   @db.Uuid
+  addedAt    DateTime @default(now())
+
+  event    Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  attendee Attendee @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+
+  @@id([eventId, attendeeId])
+  @@index([attendeeId])
+}
+
+model AttendanceRecord {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  eventId         String           @db.Uuid
+  attendeeId      String           @db.Uuid
+  idempotencyKey  String           @db.Uuid
+  scannedAt       DateTime
+  createdAt       DateTime         @default(now())
+  source          AttendanceSource @default(SCAN)
+  scannerLat      Decimal?         @db.Decimal(9, 6)
+  scannerLng      Decimal?         @db.Decimal(9, 6)
+  scannerDeviceId String?
+  note            String?
+  // Geofence audit fields — flagged (not rejected) when scanner is outside event radius
+  outsideGeofence Boolean          @default(false)
+  distanceM       Decimal?         @db.Decimal(10, 2)
+  geofenceSkipped Boolean          @default(false) // true if scanner denied/unsupported geolocation
+
+  event    Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  attendee Attendee @relation(fields: [attendeeId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, idempotencyKey])
+  @@unique([eventId, attendeeId])
+  @@index([eventId, scannedAt])
+  @@index([attendeeId, scannedAt])
+}

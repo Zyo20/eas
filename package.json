@@ -1,0 +1,27 @@
+{
+  "name": "eas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Event Attendance System (EAS) — v1: events only, offline-first scanner PWA",
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --stream dev",
+    "dev:api": "pnpm --filter @eas/api dev",
+    "dev:web": "pnpm --filter @eas/web dev",
+    "dev:scanner": "pnpm --filter @eas/scanner dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "clean": "pnpm -r exec rm -rf dist .next node_modules/.cache"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "5.6.3"
+  }
+}

@@ -1,0 +1,40 @@
+# EAS Caddy vhost — drop this into /etc/caddy/Caddyfile
+# (e.g. `sudo tee -a /etc/caddy/Caddyfile > /dev/null < ~/Workspace/eas/deploy/Caddyfile.snippet`)
+# Then `sudo systemctl reload caddy`
+#
+# Host mapping:
+#   eas.arrowtest.site            → public check-in fallback (staff without an account)
+#   web.eas.arrowtest.site        → admin dashboard (Next.js on :3016)
+#   api.eas.arrowtest.site        → API (Nest on :4000)
+#   scanner.eas.arrowtest.site    → PWA scanner (Vite preview on :5173)
+#
+# Port notes:
+#   :3016 = eas-web (verified live; was :3011 but antigravity-server owns it)
+#   :4000 = eas-api (verified live)
+#   :5173 = eas-scanner (verified live)
+#
+# DNS: the *.arrowtest.site wildcard already points to 194.233.71.16 (vmi3062768).
+# Caddy will request Let's Encrypt certs on first request after reload.
+
+eas.arrowtest.site {
+    encode gzip zstd
+    reverse_proxy /api/* 127.0.0.1:4000
+    reverse_proxy /check-in/* 127.0.0.1:3016
+    reverse_proxy 127.0.0.1:3016
+}
+
+web.eas.arrowtest.site {
+    encode gzip zstd
+    reverse_proxy /api/* 127.0.0.1:4000
+    reverse_proxy 127.0.0.1:3016
+}
+
+api.eas.arrowtest.site {
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:4000
+}
+
+scanner.eas.arrowtest.site {
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:5173
+}

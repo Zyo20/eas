@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.next/
+.turbo/
+.env
+.env.local
+*.log
+.DS_Store
+.pnpm-store/
+coverage/
+.vite/
+.vite-cache/
+prisma/migrations/*/migration_lock.toml.bak
+*.tsbuildinfo
