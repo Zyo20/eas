@@ -9,9 +9,10 @@ import {
   UseGuards,
   Req,
 } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { ApiOperation, ApiResponse, ApiTags, ApiProperty } from '@nestjs/swagger';
+import { IsEmail, IsEnum, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 import type { Request } from 'express';
+import { OrgType } from '@prisma/client';
 import { AuthService, AuthedUser } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { SetupAccountService } from './setup-account.service';
@@ -35,6 +36,63 @@ class SetupAccountDto {
   newPassword!: string;
 }
 
+export class RegisterTenantDto {
+  @ApiProperty({ description: 'The name of the organization' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  orgName!: string;
+
+  @ApiProperty({ description: 'The unique slug for the organization (lowercase alphanumeric with hyphens)' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(64)
+  @Matches(/^[a-z0-9][a-z0-9-]*$/, { message: 'slug must be lowercase alphanumeric with hyphens' })
+  orgSlug!: string;
+
+  @ApiProperty({ enum: OrgType, description: 'The type of organization' })
+  @IsEnum(OrgType)
+  orgType!: OrgType;
+
+  @ApiProperty({ description: 'The full name of the administrator' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  adminName!: string;
+
+  @ApiProperty({ description: 'The email address of the administrator' })
+  @IsEmail()
+  adminEmail!: string;
+
+  @ApiProperty({ description: 'The password of the administrator (min 8 chars)' })
+  @IsString()
+  @MinLength(8)
+  adminPassword!: string;
+}
+
+export class RegisterTenantResponseDto {
+  @ApiProperty()
+  organization!: {
+    id: string;
+    name: string;
+    slug: string;
+    type: OrgType;
+  };
+
+  @ApiProperty()
+  admin!: {
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+  };
+}
+
+export class RegisterTenantDataResponseDto {
+  @ApiProperty({ type: RegisterTenantResponseDto })
+  data!: RegisterTenantResponseDto;
+}
+
 interface AuthedRequest extends Request {
   user: { sub: string; email: string; organizationId: string; role: string };
 }
@@ -53,6 +111,16 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Returns a JWT token and user info' })
   async login(@Body() body: LoginDto) {
     return this.auth.login(body.email, body.password);
+  }
+
+  @Post('register-tenant')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Register a new tenant (organization + admin user)' })
+  @ApiResponse({ status: 201, type: RegisterTenantDataResponseDto, description: 'Tenant registered successfully' })
+  @ApiResponse({ status: 409, description: 'Slug or email already in use' })
+  async registerTenant(@Body() body: RegisterTenantDto): Promise<RegisterTenantDataResponseDto> {
+    const result = await this.auth.registerTenant(body);
+    return { data: result };
   }
 
   @Get('me')

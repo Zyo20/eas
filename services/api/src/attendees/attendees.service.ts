@@ -299,10 +299,23 @@ export class AttendeesService {
     if (!user) throw new NotFoundException(`Linked user not found`);
 
     // If the linked User was soft-deleted, re-activate it before issuing the link.
-    // Without this, the setup-token signSetupToken call writes a new jti on a
-    // soft-deleted row, and a subsequent login would still fail.
+    // Guard: make sure no OTHER active user already holds this email. This can
+    // happen if the original attendee was deleted, the email was reused for a
+    // different new account, and the admin then tries to reset the old attendee.
+    // Re-activating in that scenario would produce two active users with the
+    // same email and violate the partial-unique index.
     let activeUser = user;
     if (user.deletedAt !== null) {
+      const emailConflict = await this.prisma.user.findFirst({
+        where: { email: user.email, deletedAt: null, NOT: { id: user.id } },
+        select: { id: true },
+      });
+      if (emailConflict) {
+        throw new ConflictException(
+          `Cannot re-activate account: email ${user.email} is already registered to another active user. ` +
+          `Use POST /attendees/:id/create-account with a different email instead.`,
+        );
+      }
       activeUser = await this.prisma.user.update({
         where: { id: user.id },
         data: { deletedAt: null },

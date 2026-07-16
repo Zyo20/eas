@@ -3,6 +3,7 @@
 import { Suspense } from 'react';
 import { useState, useEffect, FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { api, setToken, getToken, type AuthUser } from '@/lib/api';
 
 function LoginForm() {
@@ -87,6 +88,14 @@ function LoginForm() {
       >
         {busy ? 'Signing in…' : 'Sign in'}
       </button>
+      <div style={{ textAlign: 'center', marginTop: 12 }}>
+        <p style={{ margin: 0, fontSize: 13, color: '#64748b' }}>
+          Need an organization tenant?{' '}
+          <Link href="/register" style={{ color: '#2563eb', textDecoration: 'none', fontWeight: 600 }}>
+            Register here
+          </Link>
+        </p>
+      </div>
     </form>
   );
 }

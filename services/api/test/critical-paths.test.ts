@@ -579,5 +579,112 @@ describe('EAS critical paths (brief §9 step 7)', () => {
       expect(payload.sub).toBeTruthy();
     }
   });
+
+  // ── v1.1.1: Tenant registration ────────────────────────────────────
+  it('tenant_registration: successfully registers a new organization and admin', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/register-tenant')
+      .send({
+        orgName: 'Mactan University',
+        orgSlug: 'mactan-uni',
+        orgType: 'SCHOOL',
+        adminName: 'Mactan Admin',
+        adminEmail: 'admin@mactan.edu',
+        adminPassword: 'securePassword123',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data).toBeDefined();
+    expect(res.body.data.organization.name).toBe('Mactan University');
+    expect(res.body.data.organization.slug).toBe('mactan-uni');
+    expect(res.body.data.organization.type).toBe('SCHOOL');
+    expect(res.body.data.admin.name).toBe('Mactan Admin');
+    expect(res.body.data.admin.email).toBe('admin@mactan.edu');
+    expect(res.body.data.admin.role).toBe('admin');
+
+    // Verify in database
+    const org = await prisma.organization.findUnique({ where: { slug: 'mactan-uni' } });
+    expect(org).toBeTruthy();
+    expect(org!.name).toBe('Mactan University');
+
+    const user = await prisma.user.findFirst({ where: { email: 'admin@mactan.edu' } });
+    expect(user).toBeTruthy();
+    expect(user!.name).toBe('Mactan Admin');
+    expect(user!.organizationId).toBe(org!.id);
+  });
+
+  it('tenant_registration: rejects duplicate organization slug', async () => {
+    // 1. Create first tenant
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/register-tenant')
+      .send({
+        orgName: 'Mactan University',
+        orgSlug: 'mactan-uni',
+        orgType: 'SCHOOL',
+        adminName: 'Mactan Admin',
+        adminEmail: 'admin@mactan.edu',
+        adminPassword: 'securePassword123',
+      });
+
+    // 2. Attempt duplicate slug registration
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/register-tenant')
+      .send({
+        orgName: 'Mactan College',
+        orgSlug: 'mactan-uni', // Duplicate slug
+        orgType: 'SCHOOL',
+        adminName: 'Mactan Admin 2',
+        adminEmail: 'admin2@mactan.edu',
+        adminPassword: 'securePassword123',
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toContain('Organization slug is already in use');
+  });
+
+  it('tenant_registration: rejects duplicate admin email', async () => {
+    // 1. Create first tenant
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/register-tenant')
+      .send({
+        orgName: 'Mactan University',
+        orgSlug: 'mactan-uni',
+        orgType: 'SCHOOL',
+        adminName: 'Mactan Admin',
+        adminEmail: 'admin@mactan.edu',
+        adminPassword: 'securePassword123',
+      });
+
+    // 2. Attempt duplicate email registration
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/register-tenant')
+      .send({
+        orgName: 'Mactan College',
+        orgSlug: 'mactan-col',
+        orgType: 'SCHOOL',
+        adminName: 'Mactan Admin 2',
+        adminEmail: 'admin@mactan.edu', // Duplicate email
+        adminPassword: 'securePassword123',
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toContain('Email address is already in use');
+  });
+
+  it('tenant_registration: rejects invalid inputs based on class-validator', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/register-tenant')
+      .send({
+        orgName: '', // Empty
+        orgSlug: 'invalid slug format', // spaces
+        orgType: 'INVALID_TYPE',
+        adminName: '',
+        adminEmail: 'not-an-email',
+        adminPassword: 'short', // < 8 chars
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBeDefined();
+  });
 });
 
