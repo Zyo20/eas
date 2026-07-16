@@ -1,8 +1,11 @@
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { RegisterViewProps } from './index';
 
-export const useRegisterView = () => {
+interface UseHooksParams extends RegisterViewProps {}
+
+export const useHooks = (_params: UseHooksParams = {}) => {
   const router = useRouter();
   const [orgName, setOrgName] = useState('');
   const [orgSlug, setOrgSlug] = useState('');

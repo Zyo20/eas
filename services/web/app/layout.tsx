@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import './global.css';
 
 export const metadata = {
   title: 'EAS',
@@ -8,16 +9,21 @@ export const metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body
-        style={{
-          fontFamily:
-            'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-          margin: 0,
-          padding: 0,
-          background: '#f8fafc',
-          color: '#0f172a',
-        }}
-      >
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var theme = localStorage.getItem('theme') || 'dark';
+                  document.documentElement.className = theme;
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
+      <body>
         {children}
       </body>
     </html>
