@@ -103,6 +103,14 @@ export class SetupAccountService {
     const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
     if (!user) throw new NotFoundException('User not found');
 
+    // Reject if the account is soft-deleted (e.g. the Attendee was bulk-deleted
+    // after the setup link was issued). The token is still cryptographically
+    // valid, but the user should not be allowed to recover an account the
+    // admin intentionally tombstoned.
+    if (user.deletedAt !== null) {
+      throw new GoneException('Account has been deactivated; contact the event admin for a new invitation');
+    }
+
     // Single-use check
     if (user.setupTokenUsedAt !== null) {
       throw new GoneException('Setup link has already been used');

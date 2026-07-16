@@ -28,7 +28,11 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string): Promise<{ token: string; user: AuthedUser }> {
-    const user = await this.prisma.user.findUnique({ where: { email } });
+    // Soft-deleted users can't log in. The partial unique on email means the
+    // active-user lookup is what matters here.
+    const user = await this.prisma.user.findFirst({
+      where: { email, deletedAt: null },
+    });
     if (!user) {
       // Use the same error either way to avoid leaking which emails are registered.
       throw new UnauthorizedException('Invalid email or password');

@@ -1,5 +1,6 @@
 import { Injectable, CanActivate, ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { PrismaService } from '../prisma/prisma.service';
 import type { Request } from 'express';
 
 interface AuthedRequest extends Request {
@@ -8,7 +9,10 @@ interface AuthedRequest extends Request {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(private readonly jwt: JwtService) {}
+  constructor(
+    private readonly jwt: JwtService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<AuthedRequest>();
@@ -27,13 +31,25 @@ export class JwtAuthGuard implements CanActivate {
     if (!token) {
       throw new UnauthorizedException('Empty bearer token');
     }
+    let payload: AuthedRequest['user'];
     try {
-      const payload = await this.jwt.verifyAsync(token);
-      // Express type for req.user is unknown; assign the payload directly.
-      req.user = payload as AuthedRequest['user'];
-      return true;
-    } catch (err) {
+      payload = (await this.jwt.verifyAsync(token)) as AuthedRequest['user'];
+    } catch {
       throw new UnauthorizedException('Invalid or expired token');
     }
+
+    // Soft-delete check: a User that was soft-deleted after the JWT was issued
+    // (e.g. via the bulk-delete path) must not be able to keep using the old
+    // token. One extra DB hit per request, but it's a primary-key lookup.
+    const user = await this.prisma.user.findFirst({
+      where: { id: payload.sub, deletedAt: null },
+      select: { id: true },
+    });
+    if (!user) {
+      throw new UnauthorizedException('Account has been deactivated');
+    }
+
+    req.user = payload;
+    return true;
   }
 }

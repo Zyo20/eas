@@ -2,6 +2,21 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
+/**
+ * Result of a setup-email send.
+ *
+ * The bulk-create-account path treats the email as a *side effect*: the User
+ * has already been created in the DB and the setup token has already been
+ * signed by the time we try to send. If the SMTP provider rate-limits us
+ * (Mailtrap free = 150/day, etc.), we MUST NOT throw — the admin still
+ * needs the setup URL to copy/paste manually. Throw only when the admin
+ * expects the email to be the primary delivery channel (single-account
+ * create, where there's no bulk-partial-success UX to fall back on).
+ */
+export type SendResult =
+  | { ok: true; messageId?: string }
+  | { ok: false; reason: 'not_configured' | 'smtp_error'; errorMessage: string };
+
 @Injectable()
 export class MailService implements OnModuleInit {
   private readonly logger = new Logger(MailService.name);
@@ -37,84 +52,102 @@ export class MailService implements OnModuleInit {
     this.isConfigured = true;
   }
 
-  async sendSetupEmail(
+  /**
+   * Best-effort send. Returns SendResult instead of throwing so callers can
+   * surface "email failed, copy the link manually" UX without losing the URL.
+   * Rate-limit errors (535), network blips, etc. all become {ok: false} here.
+   */
+  async trySendSetupEmail(
     toEmail: string,
     attendeeName: string,
     setupUrl: string,
     ttlHours: number,
-  ): Promise<void> {
+  ): Promise<SendResult> {
+    const result = await this.sendSetupEmail(toEmail, attendeeName, setupUrl, ttlHours);
+    if (result.ok) {
+      this.logger.log(`Setup email successfully sent to ${toEmail}`);
+    } else if (result.reason === 'not_configured') {
+      this.logger.log(`[SMTP Mail Sandbox - Inactive/Not Configured]\nTo: ${toEmail}\nLink: ${setupUrl}`);
+    } else {
+      this.logger.error(`Failed to send setup email to ${toEmail}: ${result.errorMessage}`);
+    }
+    return result;
+  }
+
+  /**
+   * Internal send. Does not throw. The public trySendSetupEmail wraps this
+   * with the logging side effects. Kept as a private method so callers
+   * can't accidentally call it directly and lose the result-handling.
+   */
+  private async sendSetupEmail(
+    toEmail: string,
+    attendeeName: string,
+    setupUrl: string,
+    ttlHours: number,
+  ): Promise<SendResult> {
     const fromEmail = this.config.get<string>('SMTP_FROM_EMAIL') ?? 'hello@arrowtest.site';
-    const fromName = this.config.get<string>('SMTP_FROM_NAME') ?? 'Magic Elves';
+    const fromName = this.config.get<string>('SMTP_FROM_NAME') ?? 'EAS';
 
     const subject = 'Set up your Event Attendance account';
-    
-    const textContent = `Congrats for sending test email with Mailtrap!
 
-Hello ${attendeeName},
+    const textContent = `Hello ${attendeeName},
 
-An account has been provisioned for you at Lapu-Lapu City College Event Attendance System.
+An account has been provisioned for you at the Event Attendance System.
 Please click the link below to set up your account and password:
 
 ${setupUrl}
 
 This setup link is valid for ${ttlHours} hours.
 
-If you are viewing this email in your inbox – the integration works.
-Good luck! Hope it works.`;
+If you did not request this account, you can safely ignore this email.`;
 
     const htmlContent = `<!doctype html>
 <html>
   <head>
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>Set up your Event Attendance account</title>
   </head>
-  <body style="font-family: sans-serif;">
-    <div style="display: block; margin: auto; max-width: 600px;" class="main">
-      <h1 style="font-size: 18px; font-weight: bold; margin-top: 20px">Congrats for sending test email with Mailtrap!</h1>
-      <p>Hello <strong>${attendeeName}</strong>,</p>
-      <p>An account has been provisioned for you. Please complete your registration and set your password by clicking the link below:</p>
-      <p style="margin: 20px 0;">
-        <a href="${setupUrl}" style="background-color: #3b82f6; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">Set Up Account</a>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background-color: #f8fafc; padding: 20px;">
+    <div style="max-width: 560px; margin: auto; background: white; border-radius: 8px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+      <h1 style="font-size: 20px; font-weight: 600; color: #0f172a; margin: 0 0 16px;">Welcome to Event Attendance</h1>
+      <p style="font-size: 14px; color: #334155; line-height: 1.5; margin: 0 0 16px;">
+        Hello <strong>${attendeeName}</strong>,
       </p>
-      <p>Or copy and paste this URL into your browser:</p>
-      <p style="word-break: break-all; color: #4b5563;">${setupUrl}</p>
-      <p>This setup link is valid for ${ttlHours} hours.</p>
-      
-      <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 30px 0;" />
-      
-      <img alt="Inspect with Tabs" src="https://assets-examples.mailtrap.io/integration-examples/welcome.png" style="width: 100%;">
-      <p>If you are viewing this email in your inbox – the integration works.</p>
-      <p>Now send your email using our SMTP server and integration of your choice!</p>
-      <p>Good luck! Hope it works.</p>
+      <p style="font-size: 14px; color: #334155; line-height: 1.5; margin: 0 0 24px;">
+        An account has been provisioned for you. Please complete your registration and set your password by clicking the button below:
+      </p>
+      <p style="margin: 0 0 24px;">
+        <a href="${setupUrl}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: 500; font-size: 14px;">Set up my account</a>
+      </p>
+      <p style="font-size: 13px; color: #64748b; line-height: 1.5; margin: 0 0 8px;">
+        Or copy and paste this URL into your browser:
+      </p>
+      <p style="word-break: break-all; color: #475569; font-size: 12px; background: #f1f5f9; padding: 10px; border-radius: 4px; font-family: monospace; margin: 0 0 24px;">
+        ${setupUrl}
+      </p>
+      <p style="font-size: 13px; color: #64748b; line-height: 1.5; margin: 0;">
+        This setup link is valid for ${ttlHours} hours. If you did not request this account, you can safely ignore this email.
+      </p>
     </div>
-    <style>
-      .main { background-color: white; }
-      a:hover { border-left-width: 1em; min-height: 2em; }
-    </style>
   </body>
 </html>`;
 
     if (!this.isConfigured) {
-      this.logger.log(`[SMTP Mail Sandbox - Inactive/Not Configured]
-To: ${toEmail}
-From: ${fromName} <${fromEmail}>
-Subject: ${subject}
-Text:
-${textContent}`);
-      return;
+      return { ok: false, reason: 'not_configured', errorMessage: 'SMTP not configured' };
     }
 
     try {
-      await this.transporter.sendMail({
+      const info = await this.transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: toEmail,
         subject,
         text: textContent,
         html: htmlContent,
       });
-      this.logger.log(`Setup email successfully sent to ${toEmail}`);
+      return { ok: true, messageId: info.messageId };
     } catch (error) {
-      this.logger.error(`Failed to send setup email to ${toEmail}`, error);
-      throw error;
+      const msg = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: 'smtp_error', errorMessage: msg };
     }
   }
 }

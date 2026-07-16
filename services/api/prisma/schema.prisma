@@ -50,11 +50,12 @@ model Organization {
 model User {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId String   @db.Uuid
-  email          String   @unique
+  email          String
   passwordHash   String
   name           String
   role              UserRole @default(admin)
   createdAt         DateTime @default(now())
+  deletedAt         DateTime? // soft-delete tombstone; null = active
   // Setup-link single-use marker (v1.1.1)
   setupTokenJti     String?  // jti stored when a setup token is issued; cleared after first use
   setupTokenUsedAt  DateTime? // set when the setup token is consumed
@@ -63,27 +64,37 @@ model User {
   events            Event[]
   attendeeAccount   Attendee?    @relation("AttendeeUser")
 
+  // NOTE: email uniqueness is a PARTIAL index in raw SQL
+  // (see migration 20260716004000_user_soft_delete) — only enforced while the
+  // user is active (deletedAt IS NULL). Prisma can't model partial uniques,
+  // so we rely on the migration-managed index. Do NOT add @unique back here.
   @@index([organizationId])
+  @@index([deletedAt])
 }
 
 model Attendee {
-  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String   @db.Uuid
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @db.Uuid
   identifier     String
   fullName       String
   email          String
-  userId         String?  @unique @db.Uuid
-  qrSecret       String   @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String?   @unique @db.Uuid
+  qrSecret       String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   photoUrl       String?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
+  deletedAt      DateTime? // soft-delete tombstone; null = active
 
   organization Organization         @relation(fields: [organizationId], references: [id])
   user         User?                @relation("AttendeeUser", fields: [userId], references: [id], onDelete: SetNull)
   records     AttendanceRecord[]
   rosters     EventRoster[]
 
-  @@unique([organizationId, identifier])
+  // NOTE: The (organizationId, identifier) unique is a PARTIAL index in raw SQL
+  // (see migration 20260716001950_attendee_soft_delete) — only enforced while
+  // the row is active (deletedAt IS NULL). Prisma can't model partial uniques,
+  // so we rely on the migration-managed index. Do NOT add @@unique back here.
   @@index([organizationId])
+  @@index([organizationId, deletedAt])
 }
 
 model Event {

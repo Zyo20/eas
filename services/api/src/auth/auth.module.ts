@@ -7,6 +7,7 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 import { AdminGuard } from './admin.guard';
 import { AttendeeGuard } from './attendee.guard';
 import { SetupAccountService } from './setup-account.service';
+import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { SetupAccountService } from './setup-account.service';
         // QrService passes the event-endsAt+24h per-attendee).
       }),
     }),
+    PrismaModule,
   ],
   providers: [AuthService, JwtAuthGuard, AdminGuard, AttendeeGuard, SetupAccountService],
   controllers: [AuthController],

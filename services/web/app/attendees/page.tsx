@@ -1,7 +1,16 @@
 'use client';
 
 import { useEffect, useState, useRef, FormEvent } from 'react';
-import { api, type Attendee, bulkCreateAccounts, type BulkCreateAccountsResponse } from '@/lib/api';
+import {
+  api,
+  type Attendee,
+  bulkCreateAccounts,
+  type BulkCreateAccountsResponse,
+  bulkDeleteAttendees,
+  type BulkDeleteResponse,
+  cleanupOrphanUsers,
+  type CleanupOrphanResult,
+} from '@/lib/api';
 import * as XLSX from 'xlsx';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -17,7 +26,12 @@ type SingleAccountResult = {
 type ModalState =
   | { kind: 'none' }
   | { kind: 'single'; result: SingleAccountResult }
-  | { kind: 'bulk'; result: BulkCreateAccountsResponse; orgId: string; ids: string[] };
+  | { kind: 'bulk'; result: BulkCreateAccountsResponse; orgId: string; ids: string[]; cleanup?: CleanupOrphanResult }
+  // Confirm step — admin is about to fire the bulk delete. Shows the
+  // selected attendees by name so the admin can sanity-check the list.
+  | { kind: 'bulk-delete-confirm'; ids: string[] }
+  // Result step — server returned the partial-success response.
+  | { kind: 'bulk-delete-result'; result: BulkDeleteResponse };
 
 // ── Main component ─────────────────────────────────────────────────────────
 
@@ -32,6 +46,8 @@ export default function AttendeesPage() {
   const [modal, setModal] = useState<ModalState>({ kind: 'none' });
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkText, setBulkText] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
 
   function onBulkSelect() {
     if (!bulkText.trim() || !list) return;
@@ -151,6 +167,69 @@ export default function AttendeesPage() {
     }
   }
 
+  /**
+   * "Free emails & retry" — fires when the bulk-create result is all
+   * email_taken. Calls cleanupOrphanUsers (which soft-deletes User rows
+   * linked to soft-deleted Attendees or with no Attendee owner), then
+   * re-runs bulkCreateAccounts on the same ids with the same modal in place.
+   */
+  async function onCleanupAndRetry() {
+    if (modal.kind !== 'bulk') return;
+    if (!orgId) return;
+    setCleanupBusy(true);
+    setErr(null);
+    try {
+      const cleanup: CleanupOrphanResult = await cleanupOrphanUsers(orgId);
+      // Now retry the original bulk-create on the same ids.
+      const result = await bulkCreateAccounts(orgId, modal.ids);
+      setModal({
+        kind: 'bulk',
+        result,
+        orgId,
+        ids: modal.ids,
+        cleanup,
+      });
+      await refresh(orgId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'cleanup + retry failed');
+    } finally {
+      setCleanupBusy(false);
+    }
+  }
+
+  /**
+   * Opens the confirm modal. The actual API call happens in
+   * `confirmBulkDelete` so the admin can see the names before firing.
+   */
+  function onAskBulkDelete() {
+    if (selected.size === 0) return;
+    setModal({ kind: 'bulk-delete-confirm', ids: Array.from(selected) });
+  }
+
+  /**
+   * Fires the bulk-delete request and shows the result modal.
+   * Soft-delete preserves AttendanceRecord / EventRoster rows, so this is
+   * reversible in the DB even though there's no UI restore button yet.
+   */
+  async function confirmBulkDelete() {
+    if (!orgId) return;
+    if (modal.kind !== 'bulk-delete-confirm') return;
+    const ids = modal.ids;
+    setDeleteBusy(true);
+    setErr(null);
+    try {
+      const result = await bulkDeleteAttendees(orgId, ids);
+      setSelected(new Set());
+      setModal({ kind: 'bulk-delete-result', result });
+      await refresh(orgId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'bulk delete failed');
+      setModal({ kind: 'none' });
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   function toggleSelect(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -188,19 +267,20 @@ export default function AttendeesPage() {
   }
 
   function downloadBulkCsv(result: BulkCreateAccountsResponse) {
-    const header = 'attendeeId,email,setupUrl';
+    const header = 'attendeeId,email,setupUrl,emailSent,emailError';
     const rows = result.created.map(
-      (e) => `"${e.attendeeId}","${e.email}","${e.setupUrl}"`,
+      (e) =>
+        `"${e.attendeeId}","${e.email}","${e.setupUrl}",${e.emailSent},"${
+          e.emailError ? e.emailError.replace(/"/g, '""') : ''
+        }"`,
     );
-    const csv = [header, ...rows].join('\r\n');
+    const csv = [header, ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'setup-links.csv';
-    document.body.appendChild(a);
+    a.download = `setup-links-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
-    a.remove();
     URL.revokeObjectURL(url);
   }
 
@@ -318,7 +398,59 @@ export default function AttendeesPage() {
                 {modal.result.summary.created} account(s) created,{' '}
                 {modal.result.summary.skipped} skipped out of{' '}
                 {modal.result.summary.requested} requested.
+                {modal.result.summary.emailFailures > 0 && (
+                  <>
+                    {' '}
+                    <span style={{ color: '#b45309', fontWeight: 600 }}>
+                      {modal.result.summary.emailFailures} email
+                      {modal.result.summary.emailFailures === 1 ? '' : 's'} failed to send
+                    </span>
+                    {' '}
+                    — copy the links below and send manually.
+                  </>
+                )}
               </p>
+
+              {modal.result.summary.emailFailures > 0 && (
+                <div
+                  style={{
+                    background: '#fffbeb',
+                    border: '1px solid #fde68a',
+                    borderRadius: 8,
+                    padding: 10,
+                    marginBottom: 12,
+                    fontSize: 12,
+                    color: '#78350f',
+                  }}
+                >
+                  ⚠ <strong>SMTP rate-limited or unreachable.</strong> The accounts were
+                  created, but the setup email could not be delivered. Copy each
+                  setup URL below and send it to the attendee manually (e.g. via
+                  personal email, messenger). The error from the provider:{' '}
+                  <code style={{ fontSize: 11 }}>
+                    {modal.result.created.find((c) => !c.emailSent)?.emailError}
+                  </code>
+                </div>
+              )}
+
+              {modal.cleanup && (
+                <div
+                  style={{
+                    background: '#ecfdf5',
+                    border: '1px solid #a7f3d0',
+                    borderRadius: 8,
+                    padding: 10,
+                    marginBottom: 12,
+                    fontSize: 12,
+                    color: '#065f46',
+                  }}
+                >
+                  ✓ Cleanup freed {modal.cleanup.summary.cleaned} orphan{' '}
+                  {modal.cleanup.summary.cleaned === 1 ? 'account' : 'accounts'} (
+                  {modal.cleanup.cleaned.map((c) => c.email).join(', ')}) — retried the
+                  create immediately.
+                </div>
+              )}
 
               {modal.result.skipped.length > 0 && (
                 <details style={{ marginBottom: 12 }}>
@@ -349,8 +481,29 @@ export default function AttendeesPage() {
                   }}
                 >
                   {modal.result.created.map((e) => (
-                    <div key={e.attendeeId} style={{ marginBottom: 6 }}>
-                      <strong>{e.email}</strong>
+                    <div
+                      key={e.attendeeId}
+                      style={{
+                        marginBottom: 6,
+                        paddingLeft: 4,
+                        borderLeft: e.emailSent ? 'none' : '3px solid #f59e0b',
+                      }}
+                    >
+                      <strong>
+                        {e.email}{' '}
+                        {!e.emailSent && (
+                          <span
+                            style={{
+                              color: '#b45309',
+                              fontSize: 11,
+                              fontFamily: 'sans-serif',
+                            }}
+                            title={e.emailError}
+                          >
+                            ⚠ email not sent
+                          </span>
+                        )}
+                      </strong>
                       <br />
                       <span style={{ color: '#64748b', wordBreak: 'break-all' }}>{e.setupUrl}</span>
                     </div>
@@ -359,6 +512,27 @@ export default function AttendeesPage() {
               )}
 
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {/* "Free emails & retry" — only show when the only reason
+                    anyone was skipped is email_taken, AND no cleanup has
+                    run yet for this modal (otherwise the banner above already
+                    shows the result). */}
+                {modal.result.summary.created === 0 &&
+                  !modal.cleanup &&
+                  modal.result.skipped.length > 0 &&
+                  modal.result.skipped.every((s) => s.reason === 'email_taken') && (
+                    <button
+                      id="cleanup-and-retry-btn"
+                      onClick={onCleanupAndRetry}
+                      disabled={cleanupBusy}
+                      style={{
+                        ...btnStyle,
+                        background: cleanupBusy ? '#94a3b8' : '#0f766e',
+                        cursor: cleanupBusy ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {cleanupBusy ? 'Cleaning up…' : 'Free emails & retry'}
+                    </button>
+                  )}
                 <button
                   id="bulk-download-csv"
                   onClick={() => downloadBulkCsv(modal.result)}
@@ -380,6 +554,125 @@ export default function AttendeesPage() {
                 </button>
                 <button onClick={closeModal} style={{ ...btnStyle, background: '#f1f5f9', color: '#1e293b' }}>
                   Close
+                </button>
+              </div>
+            </>
+          )}
+
+          {modal.kind === 'bulk-delete-confirm' && (
+            <>
+              <h2 style={{ margin: '0 0 4px', fontSize: 18, color: '#dc2626' }}>
+                Delete {modal.ids.length} attendees?
+              </h2>
+              <p style={{ margin: '0 0 16px', color: '#64748b', fontSize: 13 }}>
+                Soft-delete only. Attendance records and event rosters are kept for
+                audit; the attendees disappear from the active roster and can be
+                re-added later with the same identifier.
+              </p>
+              <div
+                style={{
+                  background: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: 8,
+                  padding: 12,
+                  maxHeight: 240,
+                  overflow: 'auto',
+                  fontSize: 13,
+                  marginBottom: 16,
+                }}
+              >
+                {list
+                  ?.filter((a) => modal.ids.includes(a.id))
+                  .sort((a, b) => a.fullName.localeCompare(b.fullName))
+                  .map((a) => (
+                    <div
+                      key={a.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        padding: '2px 0',
+                      }}
+                    >
+                      <span>{a.fullName}</span>
+                      <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>
+                        {a.identifier}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button
+                  onClick={closeModal}
+                  disabled={deleteBusy}
+                  style={{ ...btnStyle, background: '#f1f5f9', color: '#1e293b' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  id="bulk-delete-confirm-btn"
+                  onClick={confirmBulkDelete}
+                  disabled={deleteBusy}
+                  style={{
+                    ...btnStyle,
+                    background: '#dc2626',
+                    opacity: deleteBusy ? 0.6 : 1,
+                    cursor: deleteBusy ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {deleteBusy ? 'Deleting…' : `Delete ${modal.ids.length}`}
+                </button>
+              </div>
+            </>
+          )}
+
+          {modal.kind === 'bulk-delete-result' && (
+            <>
+              <h2 style={{ margin: '0 0 4px', fontSize: 18, color: '#dc2626' }}>
+                {modal.result.summary.deleted} Deleted
+              </h2>
+              <p style={{ margin: '0 0 16px', color: '#64748b', fontSize: 13 }}>
+                {modal.result.summary.deleted} attendee(s) soft-deleted,{' '}
+                {modal.result.summary.skipped} skipped out of{' '}
+                {modal.result.summary.requested} requested.
+              </p>
+
+              {modal.result.deleted.length > 0 && (
+                <details open style={{ marginBottom: 12 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 13, color: '#475569' }}>
+                    {modal.result.deleted.length} deleted
+                  </summary>
+                  <ul style={{ margin: '8px 0 0 16px', fontSize: 12, color: '#1e293b' }}>
+                    {modal.result.deleted.map((d) => (
+                      <li key={d.attendeeId}>
+                        <strong>{d.fullName}</strong>{' '}
+                        <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>
+                          ({d.identifier})
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {modal.result.skipped.length > 0 && (
+                <details style={{ marginBottom: 12 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 13, color: '#94a3b8' }}>
+                    {modal.result.skipped.length} skipped
+                  </summary>
+                  <ul style={{ margin: '8px 0 0 16px', fontSize: 12, color: '#64748b' }}>
+                    {modal.result.skipped.map((s) => (
+                      <li key={s.attendeeId}>
+                        {s.attendeeId.slice(0, 8)}… — {s.reason.replace(/_/g, ' ')}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button onClick={closeModal} style={btnStyle}>
+                  Done
                 </button>
               </div>
             </>
@@ -525,18 +818,33 @@ export default function AttendeesPage() {
             </button>
           </div>
           {someSelected && (
-            <button
-              id="bulk-create-accounts-btn"
-              onClick={onBulkCreateAccounts}
-              disabled={bulkBusy}
-              style={{
-                ...btnStyle,
-                opacity: bulkBusy ? 0.6 : 1,
-                cursor: bulkBusy ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {bulkBusy ? 'Creating…' : `Create accounts (${selected.size})`}
-            </button>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                id="bulk-create-accounts-btn"
+                onClick={onBulkCreateAccounts}
+                disabled={bulkBusy}
+                style={{
+                  ...btnStyle,
+                  opacity: bulkBusy ? 0.6 : 1,
+                  cursor: bulkBusy ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {bulkBusy ? 'Creating…' : `Create accounts (${selected.size})`}
+              </button>
+              <button
+                id="bulk-delete-btn"
+                onClick={onAskBulkDelete}
+                disabled={deleteBusy}
+                style={{
+                  ...btnStyle,
+                  background: '#dc2626',
+                  opacity: deleteBusy ? 0.6 : 1,
+                  cursor: deleteBusy ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Delete ({selected.size})
+              </button>
+            </div>
           )}
         </div>
 

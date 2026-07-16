@@ -148,6 +148,14 @@ export type SetupLinkEntry = {
   attendeeId: string;
   email: string;
   setupUrl: string;
+  /**
+   * True if the setup email was delivered. False if SMTP failed (rate
+   * limit, network blip) — the setupUrl is still in the response so the
+   * admin can copy/paste it manually.
+   */
+  emailSent: boolean;
+  /** If the email send failed, the SMTP error message. */
+  emailError?: string;
 };
 
 export type BulkSkipReason = 'already_has_account' | 'missing_email' | 'email_taken' | 'not_found';
@@ -160,7 +168,24 @@ export type BulkSkippedEntry = {
 export type BulkCreateAccountsResponse = {
   created: SetupLinkEntry[];
   skipped: BulkSkippedEntry[];
-  summary: { requested: number; created: number; skipped: number };
+  summary: { requested: number; created: number; skipped: number; emailFailures: number };
+};
+
+// ---- v1.1.x: Bulk soft-delete ----
+
+export type BulkDeletedEntry = {
+  attendeeId: string;
+  identifier: string;
+  fullName: string;
+  deletedAt: string;
+};
+
+export type BulkDeleteSkipReason = 'not_found' | 'already_deleted';
+
+export type BulkDeleteResponse = {
+  deleted: BulkDeletedEntry[];
+  skipped: { attendeeId: string; reason: BulkDeleteSkipReason }[];
+  summary: { requested: number; deleted: number; skipped: number };
 };
 
 export type SetupInfoResponse = {
@@ -182,6 +207,33 @@ export async function bulkCreateAccounts(
     attendeeIds,
     ...(expiresInHours !== undefined ? { expiresInHours } : {}),
   });
+}
+
+/**
+ * Bulk soft-delete attendees. Returns the deleted entries and any skipped
+ * (not_found or already_deleted) so the UI can show partial success.
+ */
+export async function bulkDeleteAttendees(
+  orgId: string,
+  attendeeIds: string[],
+): Promise<BulkDeleteResponse> {
+  return api.post<BulkDeleteResponse>(`/orgs/${orgId}/attendees/bulk-delete`, {
+    attendeeIds,
+  });
+}
+
+/**
+ * Soft-delete every active User in the org that's orphaned (linked to a
+ * soft-deleted Attendee, or not linked to any Attendee). Returns the cleaned
+ * list and a summary. Frees up emails that are stuck behind stale accounts.
+ */
+export type CleanupOrphanResult = {
+  cleaned: { userId: string; email: string; reason: 'linked_to_deleted_attendee' }[];
+  summary: { requested: number; cleaned: number };
+};
+
+export async function cleanupOrphanUsers(orgId: string): Promise<CleanupOrphanResult> {
+  return api.post<CleanupOrphanResult>(`/orgs/${orgId}/cleanup-orphan-users`, {});
 }
 
 /**

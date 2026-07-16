@@ -26,6 +26,7 @@ import {
   AttendeeDto,
   CsvImportResult,
   BulkCreateAccountsResult,
+  BulkDeleteResult,
 } from './attendees.service';
 import { AdminGuard } from '../auth/admin.guard';
 
@@ -80,6 +81,14 @@ class BulkCreateAccountsBody {
   @Min(1)
   @Max(8760)
   expiresInHours?: number;
+}
+
+class BulkDeleteAttendeesBody {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @IsUUID('all', { each: true })
+  attendeeIds!: string[];
 }
 
 @ApiTags('attendees')
@@ -163,6 +172,26 @@ export class AttendeesController {
     @Body() body: BulkCreateAccountsBody,
   ): Promise<BulkCreateAccountsResult> {
     return this.attendees.bulkCreateAccounts(orgId, body.attendeeIds, body.expiresInHours);
+  }
+
+  /**
+   * Bulk soft-delete attendees. Partial-success: ids that don't exist or are
+   * already soft-deleted are reported in `skipped`. The deleted rows stay in
+   * the DB with `deletedAt` set, so historical attendance records are preserved.
+   *
+   * IMPORTANT: Like bulk-create-accounts, this route MUST be registered before
+   * :id routes for the same NestJS routing reason.
+   */
+  @Post('bulk-delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk soft-delete attendees' })
+  @ApiResponse({ status: 200, description: 'Partial-success result with deleted + skipped entries' })
+  @ApiResponse({ status: 400, description: 'Validation error (e.g. > 100 ids)' })
+  async bulkDelete(
+    @Param('orgId', new ParseUUIDPipe()) orgId: string,
+    @Body() body: BulkDeleteAttendeesBody,
+  ): Promise<BulkDeleteResult> {
+    return this.attendees.bulkDelete(orgId, body.attendeeIds);
   }
 
   /**
@@ -262,7 +291,7 @@ export class AttendeesController {
     @Param('orgId', new ParseUUIDPipe()) orgId: string,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() body: CreateAccountBody,
-  ): Promise<{ attendeeId: string; userId: string; email: string; setupUrl: string; note: string }> {
+  ): Promise<{ attendeeId: string; userId: string; email: string; setupUrl: string; emailSent: boolean; emailError?: string; note: string }> {
     const result = await this.attendees.createAccount(orgId, id, body.email);
     return {
       ...result,
@@ -280,7 +309,7 @@ export class AttendeesController {
   async resetAccount(
     @Param('orgId', new ParseUUIDPipe()) orgId: string,
     @Param('id', new ParseUUIDPipe()) id: string,
-  ): Promise<{ attendeeId: string; userId: string; email: string; setupUrl: string; note: string }> {
+  ): Promise<{ attendeeId: string; userId: string; email: string; setupUrl: string; emailSent: boolean; emailError?: string; note: string }> {
     const result = await this.attendees.resetAccount(orgId, id);
     return {
       ...result,
