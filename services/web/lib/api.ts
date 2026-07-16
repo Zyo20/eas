@@ -39,7 +39,11 @@ async function http<T = unknown>(method: string, path: string, body?: unknown): 
     const text = await res.text();
     let parsed: unknown = text;
     try { parsed = JSON.parse(text); } catch { /* leave as text */ }
-    throw new ApiError(res.status, parsed, `HTTP ${res.status}`);
+    const message =
+      parsed && typeof parsed === 'object' && 'message' in parsed && typeof (parsed as Record<string, unknown>).message === 'string'
+        ? (parsed as Record<string, unknown>).message as string
+        : `HTTP ${res.status}`;
+    throw new ApiError(res.status, parsed, message);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
